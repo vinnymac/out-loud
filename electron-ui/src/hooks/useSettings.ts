@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { DEFAULT_SETTINGS } from "../constants";
+import { DEFAULT_SETTINGS, DEFAULT_TEXT } from "../constants";
 
 interface Settings {
   text: string;
@@ -21,7 +21,11 @@ export function useSettings() {
     } catch {
       // ignore parse errors
     }
-    return DEFAULT_SETTINGS;
+    // First-ever launch: pre-fill with the example so users see what the app
+    // does without having to type anything. After they edit/clear it, the
+    // result persists via localStorage — never re-injected as a "fallback"
+    // (which would prevent the user from clearing the textarea).
+    return { ...DEFAULT_SETTINGS, text: DEFAULT_TEXT };
   });
 
   const isInitialized = useRef(false);

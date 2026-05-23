@@ -7,11 +7,14 @@ import { ProgressBar } from "./components/ProgressBar";
 import { SettingsCheckbox } from "./components/SettingsCheckbox";
 import { useAudioPlayer } from "./hooks/useAudioPlayer";
 import { useSettings } from "./hooks/useSettings";
-import { DEFAULT_TEXT } from "./constants";
 
 function App() {
   const { settings, updateSetting } = useSettings();
-  const text = settings.text || DEFAULT_TEXT;
+  // Read settings.text verbatim. DEFAULT_TEXT is seeded into settings once on
+  // first launch (see useSettings); after that, the empty string is a legit
+  // value the user chose. Falling back to DEFAULT_TEXT here would make the
+  // textarea impossible to clear and look like the value "flickers" back.
+  const text = settings.text;
   const setText = (newText: string) => updateSetting("text", newText);
 
   const getVolume = useCallback(() => settings.volume, [settings.volume]);

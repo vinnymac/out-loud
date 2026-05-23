@@ -54,24 +54,33 @@ From a clean `main` branch:
 ```bash
 # 1. Bump version (keeps package.json + creates git tag)
 npm version patch   # or minor / major
-# → commits "1.0.1" and tags it as "v1.0.1"
+# → commits "1.0.4" and tags it as "v1.0.4"
 
 # 2. Push commit + tag together
 git push --follow-tags
 
 # 3. Watch the workflow
 gh run watch
+
+# 4. After CI publishes the draft, notarize the macOS DMGs locally
+node scripts/notarize-release.mjs
+# → downloads DMGs, submits to Apple, staples, re-uploads. ~5–15 min per DMG.
+
+# 5. Test, then publish
+gh release edit v1.0.4 --repo light-cloud-com/out-loud --draft=false
 ```
 
 The tag push triggers [`.github/workflows/release.yml`](../../.github/workflows/release.yml), which:
 
-1. Builds the macOS app on `macos-latest` (both `arm64` + `x64`)
+1. Builds the macOS app on `macos-latest` — **signed but NOT notarized**. CI never blocks on Apple's notary queue, so this job consistently completes in ~5 min.
 2. Builds the Windows installer on `windows-latest`
 3. Builds the Linux AppImage + .deb on `ubuntu-latest`
 4. Packs the Chrome extension on `ubuntu-latest`
 5. Creates a **draft** GitHub Release with all artifacts attached
 
-Draft releases aren't public — review the assets and notes, then click **Publish release** in the GitHub UI when ready.
+The notarize-release script (step 4) handles the Apple side locally — see the **Code signing** section for the rationale (Pattern C).
+
+Draft releases aren't public — review the assets, run the notarize script, test the install, then click **Publish release** in the GitHub UI when ready.
 
 ### Manual trigger
 
@@ -101,37 +110,58 @@ Cross-platform caveats:
 
 ## Code signing
 
-Release builds are **Developer-ID signed on macOS** (using the cert pinned in `electron-builder.json` as `mac.identity`) and **unsigned on Windows**. Notarization on macOS is currently disabled (`mac.notarize: false`) — flip it back on once Apple's notary service is reliable again.
+Release builds are **Developer-ID signed on macOS** (using the cert pinned in `electron-builder.json` as `mac.identity`) and **unsigned on Windows**.
+
+Notarization is intentionally **disabled in CI** (`mac.notarize: false`) and handled locally via `scripts/notarize-release.mjs` after CI finishes. This is **Pattern C** — see below for the rationale.
+
+### Pattern C: CI signs, maintainer notarizes locally
+
+We tried two earlier patterns and both broke under Apple's notary outages:
+
+- **Pattern A (CI does everything inline)**: `notarytool submit --wait` runs inside the CI build job. The job times out (we cap at 45 min) when Apple's queue stalls — and during 1.0.2's release window, two submissions sat `In Progress` for 24+ hours. CI fails, you can't ship.
+- **Pattern B (async with a watcher job)**: split into "submit" + "poll + staple" jobs orchestrated by `schedule:` triggers. Robust but adds real workflow complexity (state passing between jobs, artifact management, retry logic).
+
+**Pattern C** keeps CI simple by removing the notarization step entirely from the build. CI ships signed-but-unnotarized DMGs to a draft release. The maintainer (you) then runs `node scripts/notarize-release.mjs` from any macOS terminal with the keychain credentials. That script:
+
+1. Downloads each `.dmg` from the draft via `gh release download`
+2. Submits to Apple with `xcrun notarytool submit --wait --timeout 2h`
+3. On `Accepted`, staples the ticket with `xcrun stapler staple`
+4. Verifies with `spctl --assess`
+5. Re-uploads with `gh release upload --clobber`
+
+Apple can take minutes or hours — it doesn't matter; the only thing waiting is your local terminal. The CI workflow has already long-since finished.
+
+The script is idempotent: if a DMG is already stapled, it skips the submit step and just re-verifies. Safe to retry after partial failures.
+
+Prerequisite: store credentials in your Keychain once.
+
+```bash
+xcrun notarytool store-credentials "out-loud-notary" \
+  --apple-id "<your-apple-id>" \
+  --team-id "<TEAM_ID>"
+```
 
 ### macOS first-launch UX
 
 | Build state | What users see on first launch |
 | ----------- | ------------------------------ |
-| Developer-ID signed AND notarized (1.0.3+) | App opens immediately, no dialog. |
-| Developer-ID signed, NOT notarized (1.0.2 only) | "macOS cannot verify the developer of Out Loud." Workaround is OS-version-dependent. |
+| Developer-ID signed AND notarized (after running `notarize-release.mjs`) | App opens immediately, no dialog. |
+| Developer-ID signed, NOT notarized (raw CI output, or if you skip notarization) | "macOS cannot verify the developer of Out Loud." Right-click → Open (macOS 14-), or System Settings → Privacy & Security → Open Anyway (macOS 15+). |
 
-1.0.2 shipped signed-but-not-notarized because Apple's notary service was stuck for 24+ hours during the release window. Their queue cleared later the same day; 1.0.3 flipped `mac.notarize` back to `true` and notarization succeeded.
+End-user instructions for the second case live in the [main README](../../README.md#macos-first-launch).
 
-If Apple's notary service stalls again in the future:
-- Flip `mac.notarize: false` in `electron-builder.json` to ship signed-only.
-- Document the per-OS workaround for that release.
-- Flip back to `true` once Apple's queue is healthy and cut a patch.
+### macOS: required secrets and env vars
 
-End-user workaround instructions (right-click → Open on macOS 14, Privacy & Security → Open Anyway on macOS 15+) live in the [main README](../../README.md#macos-first-launch).
+CI signs but doesn't notarize, so it only needs the signing pair. These should be set as GitHub repository secrets:
 
-### macOS: enabling notarization
+| Secret                        | Used by | Source                                                   |
+| ----------------------------- | ------- | -------------------------------------------------------- |
+| `CSC_LINK`                    | CI      | Base64-encoded `.p12` certificate                        |
+| `CSC_KEY_PASSWORD`            | CI      | Password for the `.p12`                                  |
 
-When ready (and when Apple's notary service is healthy), flip `mac.notarize` to `true` in `electron-builder.json` and ensure these env vars / GitHub secrets are set:
+The notarize-release script runs locally and uses the Keychain profile (`out-loud-notary`) you set up with `xcrun notarytool store-credentials`. No env vars needed for the script.
 
-| Secret                        | Source                                                   |
-| ----------------------------- | -------------------------------------------------------- |
-| `CSC_LINK`                    | Base64-encoded `.p12` certificate (for CI)               |
-| `CSC_KEY_PASSWORD`            | Password for the `.p12`                                  |
-| `APPLE_ID`                    | Apple ID email                                           |
-| `APPLE_APP_SPECIFIC_PASSWORD` | App-specific password from appleid.apple.com             |
-| `APPLE_TEAM_ID`               | Apple Developer Team ID                                  |
-
-For local builds on a Mac that has the cert in Keychain, you only need the three `APPLE_*` env vars (or `APPLE_KEYCHAIN_PROFILE` if you stored credentials via `xcrun notarytool store-credentials`).
+If you want to put `APPLE_ID` / `APPLE_TEAM_ID` / `APPLE_APP_SPECIFIC_PASSWORD` into GitHub secrets too — say you ever decide to move back to Pattern A — they're consumed by `release.yml`'s env block but only activate notarization when `mac.notarize` is `true` in `electron-builder.json`. Today they're effectively unused.
 
 For Mac App Store (not Developer ID direct distribution), see [`mac-app-store.md`](./mac-app-store.md).
 

@@ -3,6 +3,27 @@
 All notable user-facing changes to Out Loud. See `git log` for the full
 history.
 
+## 1.0.4 — 2026-05-23
+
+### UI
+
+- **Textarea no longer reverts to the example text.** The input field used
+  a per-render fallback (`settings.text || DEFAULT_TEXT`), which meant any
+  empty value snapped back to the example. Typing felt like the field was
+  fighting you and clearing it was impossible. Now `DEFAULT_TEXT` is seeded
+  into the saved settings only on the first-ever launch; after that, your
+  edits (including the empty string) persist properly.
+
+### Release infrastructure (no user-visible change)
+
+- **Switched to Pattern C** for macOS notarization to insulate releases
+  from Apple notary outages. CI ships signed-but-not-notarized DMGs to a
+  draft release in ~5 min (no waiting on Apple). A new local script
+  `scripts/notarize-release.mjs` then downloads, submits to Apple, staples,
+  and re-uploads — this can take as long as it needs to without timing out
+  the CI runner. See [docs/build/releasing.md](./docs/build/releasing.md)
+  for the rationale and step-by-step.
+
 ## 1.0.3 — 2026-05-23
 
 ### macOS
