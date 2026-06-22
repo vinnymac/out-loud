@@ -9,10 +9,11 @@
     "build": "vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "stage": "node scripts/stage-resources.mjs",
+    "sign": "node scripts/codesign-app.mjs",
     "dmg": "node scripts/make-dmg.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
-    "tauri:build": "npm run stage && tauri build && npm run dmg",
+    "tauri:build": "npm run stage && tauri build && npm run sign && npm run dmg",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {

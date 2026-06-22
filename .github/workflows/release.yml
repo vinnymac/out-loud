@@ -92,10 +92,13 @@ jobs:
     env:
       # `tauri build` auto-signs whenever it sees APPLE_SIGNING_IDENTITY or
       # APPLE_CERTIFICATE in the environment — and fails if the cert isn't in the
-      # keychain. So NO Apple vars live at the job level: `tauri build` always
-      # produces an ad-hoc bundle, and Developer ID signing happens only in the
-      # gated, self-contained "Sign .app" step. SIGN_MACOS is a plain boolean flag
-      # (not a var Tauri recognizes), true only when an identity secret exists.
+      # keychain. So NO Apple vars live at the job level. NOTE: without those vars
+      # `tauri build` leaves the bundle UNSIGNED (it does NOT ad-hoc sign), which
+      # makes arm64 unlaunchable and a quarantined download show "damaged". So we
+      # always sign afterward: Developer ID + notarization when the identity
+      # secret exists, otherwise an explicit ad-hoc signature (valid, but
+      # un-notarized). SIGN_MACOS is a plain boolean flag (not a var Tauri
+      # recognizes), true only when an identity secret exists.
       SIGN_MACOS: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
       MAC_APP: src-tauri/target/release/bundle/macos/Out Loud.app
       MAC_DMG_DIR: src-tauri/target/release/bundle/dmg
@@ -230,6 +233,14 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
           codesign --force --deep --options runtime --timestamp --keychain "$KEYCHAIN" --sign "$APPLE_SIGNING_IDENTITY" "$MAC_APP"
           codesign --verify --deep --strict --verbose=2 "$MAC_APP"
+
+      # No Developer ID? Ad-hoc sign so the bundle has a VALID signature: arm64
+      # can launch and a quarantined download shows the bypassable "unidentified
+      # developer" prompt instead of "damaged". Runs whenever the Developer ID
+      # step above does not.
+      - name: Ad-hoc sign .app (macOS, no Developer ID)
+        if: ${{ runner.os == 'macOS' && !(env.SIGN_MACOS == 'true' && github.event_name != 'pull_request') }}
+        run: npm run sign
 
       - name: Package DMG (macOS, LZMA/ULMO)
         if: runner.os == 'macOS'
