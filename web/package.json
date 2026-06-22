@@ -1,0 +1,35 @@
+{
+  "name": "out-loud-web",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "description": "Out Loud on the web — the same Kokoro-82M TTS app, running 100% in the browser (onnxruntime-web + espeak-ng WASM). Reuses the Tauri/Vue UI; no desktop app or server required.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit -p tsconfig.json && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.json",
+    "e2e": "playwright test"
+  },
+  "dependencies": {
+    "jszip": "^3.10.1",
+    "onnxruntime-web": "1.23.2",
+    "pdfjs-dist": "^6.0.227",
+    "vue": "^3.5.38",
+    "vue-i18n": "^11.4.6"
+  },
+  "devDependencies": {
+    "@iconify-json/lucide": "^1.2.114",
+    "@playwright/test": "^1.49.0",
+    "@types/node": "^26.0.0",
+    "@unocss/preset-icons": "^66.7.2",
+    "@unocss/preset-wind4": "^66.7.2",
+    "@unocss/transformer-directives": "^66.7.2",
+    "@unocss/transformer-variant-group": "^66.7.2",
+    "@vitejs/plugin-vue": "^6.0.7",
+    "typescript": "~6.0.3",
+    "unocss": "^66.7.2",
+    "vite": "^8.0.16",
+    "vue-tsc": "^3.3.5"
+  }
+}
