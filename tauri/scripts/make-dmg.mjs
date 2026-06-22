@@ -1,21 +1,13 @@
 // Build the distributable DMG with LZMA (ULMO) compression — the smallest
-// download that still opens on macOS 10.15+ (2019), comfortably within our
-// "don't drop 3–4-year-old macOS" support floor.
+// download that still opens on macOS 10.15+ (2019).
 //
 // We own this step instead of Tauri's `dmg` bundle target: that target runs an
 // AppleScript to lay out the installer window, which HANGS in a headless/CI
-// session (no Apple Events). tauri.conf.json therefore builds only the `app`
-// target and we package the DMG here. See scripts/stage-resources.mjs.
+// session (no Apple Events). tauri.conf.json builds only the `app` target and we
+// package the DMG here. Handles both a per-arch build (target/release/bundle) and
+// a universal build (target/universal-apple-darwin/release/bundle).
 //
-// Two paths:
-//   1. If a DMG already exists at the canonical path (e.g. Tauri's styled `dmg`
-//      target was run on an interactive login), recompress it to ULMO with
-//      `hdiutil convert` — preserves the styled window AND shrinks it.
-//   2. Otherwise, assemble a plain folder (.app + /Applications symlink) and
-//      `hdiutil create -format ULMO`.
-//
-// Crashes loudly if the .app is missing or hdiutil fails — a missing installer
-// is a build failure, not something to paper over.
+// Crashes loudly if the .app is missing or hdiutil fails.
 import { execFileSync } from "node:child_process";
 import { rm, mkdir, mkdtemp, readFile, stat, symlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -23,9 +15,14 @@ import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const TAURI = join(__dirname, "..");
-const BUNDLE = join(TAURI, "src-tauri", "target", "release", "bundle");
-const APP = join(BUNDLE, "macos", "Out Loud.app");
-const DMG_DIR = join(BUNDLE, "dmg");
+const TARGET = join(TAURI, "src-tauri", "target");
+const APP_NAME = "Out Loud.app";
+
+// Prefer the universal bundle if present, else the per-arch one.
+const BUNDLE_CANDIDATES = [
+  join(TARGET, "universal-apple-darwin", "release", "bundle"),
+  join(TARGET, "release", "bundle"),
+];
 
 const FORMAT = "ULMO"; // LZMA — macOS 10.15+
 const VOLNAME = "Out Loud";
@@ -43,8 +40,8 @@ async function exists(p) {
   }
 }
 
-// Match Tauri's DMG naming so the artifact path is stable across both paths.
-function archTag() {
+function archTag(bundle) {
+  if (bundle.includes("universal-apple-darwin")) return "universal";
   if (process.arch === "arm64") return "aarch64";
   if (process.arch === "x64") return "x64";
   return process.arch;
@@ -54,23 +51,34 @@ async function main() {
   if (process.platform !== "darwin") {
     throw new Error("make-dmg.mjs is macOS-only (uses hdiutil/ditto).");
   }
-  if (!(await exists(APP))) {
-    throw new Error(`No app bundle at ${APP}. Run \`tauri build\` first.`);
+
+  let bundle = null;
+  for (const b of BUNDLE_CANDIDATES) {
+    if (await exists(join(b, "macos", APP_NAME))) {
+      bundle = b;
+      break;
+    }
+  }
+  if (!bundle) {
+    throw new Error(
+      `No ${APP_NAME} under any of: ${BUNDLE_CANDIDATES.join(", ")}. Run \`tauri build\` first.`
+    );
   }
 
+  const app = join(bundle, "macos", APP_NAME);
+  const dmgDir = join(bundle, "dmg");
   const { version } = JSON.parse(await readFile(join(TAURI, "package.json"), "utf8"));
-  const out = join(DMG_DIR, `Out Loud_${version}_${archTag()}.dmg`);
-  await mkdir(DMG_DIR, { recursive: true });
-  // Always rebuild from the freshly-built .app — never recompress a stale DMG.
-  await rm(out, { force: true });
+  const out = join(dmgDir, `Out Loud_${version}_${archTag(bundle)}.dmg`);
+  await mkdir(dmgDir, { recursive: true });
+  await rm(out, { force: true }); // always rebuild from the fresh .app
 
-  const stage = await mkdtemp(join(BUNDLE, "dmg-stage-"));
+  const stage = await mkdtemp(join(bundle, "dmg-stage-"));
   try {
-    log("assembling installer folder (.app + /Applications)…");
+    log(`assembling installer folder from ${app}…`);
     // ditto copies the bundle faithfully (symlinks, perms, resource forks).
-    execFileSync("ditto", [APP, join(stage, "Out Loud.app")], { stdio: "inherit" });
+    execFileSync("ditto", [app, join(stage, APP_NAME)], { stdio: "inherit" });
     await symlink("/Applications", join(stage, "Applications"));
-    log(`creating ${FORMAT} DMG from ${APP}…`);
+    log(`creating ${FORMAT} DMG…`);
     execFileSync(
       "hdiutil",
       ["create", "-volname", VOLNAME, "-srcfolder", stage, "-ov", "-format", FORMAT, out],

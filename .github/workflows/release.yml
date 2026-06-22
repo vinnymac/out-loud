@@ -1,7 +1,7 @@
 name: Release
 
-# Builds the native-Rust Tauri app for macOS (Intel + Apple Silicon), Windows, and
-# Linux, packs the Chrome extension, and publishes a DRAFT GitHub Release.
+# Builds the native-Rust Tauri app for macOS (universal: Intel + Apple Silicon),
+# Windows, and Linux, packs the Chrome extension, and publishes a DRAFT Release.
 #
 #   pull_request -> full matrix build (validates parity; no release)
 #   tag v* / dispatch -> matrix build + (optional macOS sign/notarize) + draft release
@@ -21,6 +21,11 @@ on:
       - "espeak-ng-data/**"
       - ".github/workflows/release.yml"
 
+# A new push to the same ref cancels the previous run (frees the scarce runners).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write # to attach assets to the GitHub Release
 
@@ -31,30 +36,34 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # macOS x64 MUST be Intel (macos-13): onnxruntime is 1.20.1, the last
-          # release with a macOS x86_64 binary.
+          # ONE universal macOS build on the fast Apple Silicon runner (cross-builds
+          # x86_64 + arm64 and lipos them). Avoids the slow/scarce/deprecated macos-13
+          # Intel runner entirely and ships a single .dmg for both architectures.
           - {
-              label: "macOS (Intel)",
-              os: macos-13,
-              bundles: "app",
-              glob: "src-tauri/target/release/bundle/dmg/*.dmg",
-            }
-          - {
-              label: "macOS (Apple Silicon)",
+              label: "macOS (universal)",
               os: macos-14,
               bundles: "app",
-              glob: "src-tauri/target/release/bundle/dmg/*.dmg",
+              target_flag: "--target universal-apple-darwin",
+              rust_targets: "x86_64-apple-darwin,aarch64-apple-darwin",
+              universal: "1",
+              glob: "src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg",
             }
           - {
               label: "Windows (x64)",
               os: windows-latest,
               bundles: "nsis",
+              target_flag: "",
+              rust_targets: "",
+              universal: "",
               glob: "src-tauri/target/release/bundle/nsis/*-setup.exe",
             }
           - {
               label: "Linux (x64)",
               os: ubuntu-22.04,
               bundles: "deb",
+              target_flag: "",
+              rust_targets: "",
+              universal: "",
               glob: "src-tauri/target/release/bundle/deb/*.deb",
             }
     runs-on: ${{ matrix.os }}
@@ -64,13 +73,15 @@ jobs:
         working-directory: tauri
     env:
       # `tauri build` auto-signs whenever it sees APPLE_SIGNING_IDENTITY or
-      # APPLE_CERTIFICATE in the environment — which failed every build (it tried to
-      # codesign with no cert in the keychain). So NO Apple vars live at the job
-      # level: `tauri build` always produces an ad-hoc bundle, and Developer ID
-      # signing happens only in the gated, self-contained "Sign .app" step below.
-      # SIGN_MACOS is just a boolean flag (not a var Tauri recognizes) used to gate
-      # that step; it's true only when an APPLE_SIGNING_IDENTITY secret exists.
+      # APPLE_CERTIFICATE in the environment — and fails if the cert isn't in the
+      # keychain. So NO Apple vars live at the job level: `tauri build` always
+      # produces an ad-hoc bundle, and Developer ID signing happens only in the
+      # gated, self-contained "Sign .app" step. SIGN_MACOS is a plain boolean flag
+      # (not a var Tauri recognizes), true only when an identity secret exists.
       SIGN_MACOS: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
+      # The macOS .app lives under a target-triple dir for the universal build.
+      MAC_APP: src-tauri/target/universal-apple-darwin/release/bundle/macos/Out Loud.app
+      MAC_DMG_DIR: src-tauri/target/universal-apple-darwin/release/bundle/dmg
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -84,15 +95,17 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "tauri/src-tauri -> target"
 
-      # espeak-ng-data is vendored in the repo, so no system espeak install is
-      # needed anywhere. We only need cmake (+ a C compiler) to build the vendored
-      # espeak-ng C in espeak-rs-sys, and the Tauri/WebKit system libs on Linux.
+      # espeak-ng-data is vendored, so no system espeak install anywhere. We only
+      # need cmake (+ a C compiler) for the vendored espeak-ng C in espeak-rs-sys,
+      # and the Tauri/WebKit system libs on Linux.
       - name: Linux system deps
         if: runner.os == 'Linux'
         working-directory: .
@@ -111,13 +124,15 @@ jobs:
         run: npm ci
 
       - name: Stage resources (onnxruntime + espeak-ng-data + models + openapi)
+        env:
+          OUT_LOUD_UNIVERSAL: ${{ matrix.universal }}
         run: npm run stage
 
       - name: Build app bundle
-        run: npx tauri build --bundles ${{ matrix.bundles }}
+        run: npx tauri build ${{ matrix.target_flag }} --bundles ${{ matrix.bundles }}
 
-      # macOS-only: deep-sign (nested onnxruntime dylib + hardened runtime), package
-      # the LZMA DMG, then notarize. All gated on APPLE_SIGNING_IDENTITY being set.
+      # macOS-only: deep-sign (nested onnxruntime dylib + hardened runtime). Gated on
+      # an APPLE_SIGNING_IDENTITY secret; ad-hoc otherwise.
       - name: Sign .app (macOS, Developer ID)
         if: ${{ runner.os == 'macOS' && github.event_name != 'pull_request' && env.SIGN_MACOS == 'true' }}
         env:
@@ -125,7 +140,6 @@ jobs:
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
-          # Import the Developer ID cert into a temporary keychain.
           KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
           security create-keychain -p "" "$KEYCHAIN"
           security set-keychain-settings -lut 3600 "$KEYCHAIN"
@@ -134,10 +148,8 @@ jobs:
           security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
           security list-keychains -d user -s "$KEYCHAIN" login.keychain
           security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
-          # Deep-sign (nested onnxruntime dylib) with hardened runtime.
-          APP="src-tauri/target/release/bundle/macos/Out Loud.app"
-          codesign --force --deep --options runtime --timestamp --keychain "$KEYCHAIN" --sign "$APPLE_SIGNING_IDENTITY" "$APP"
-          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign --force --deep --options runtime --timestamp --keychain "$KEYCHAIN" --sign "$APPLE_SIGNING_IDENTITY" "$MAC_APP"
+          codesign --verify --deep --strict --verbose=2 "$MAC_APP"
 
       - name: Package DMG (macOS, LZMA/ULMO)
         if: runner.os == 'macOS'
@@ -150,7 +162,7 @@ jobs:
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
-          DMG=$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)
+          DMG=$(ls "$MAC_DMG_DIR"/*.dmg | head -1)
           xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
           xcrun stapler staple "$DMG"
 

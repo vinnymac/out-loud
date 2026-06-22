@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main]
 
+# A new push to the same ref cancels the previous run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   frontend:
     name: Frontend typecheck + format
@@ -40,7 +45,7 @@ jobs:
 
   engine:
     name: Engine unit tests
-    runs-on: macos-13
+    runs-on: macos-14 # fast Apple Silicon runner (no scarce macos-13 dependency)
     timeout-minutes: 40
     steps:
       - name: Checkout

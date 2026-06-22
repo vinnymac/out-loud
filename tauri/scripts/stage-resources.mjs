@@ -78,22 +78,42 @@ async function stripMachO(p, label) {
 // ---- 1. ONNX Runtime dylib (sourced from the onnxruntime-node dev dependency) -
 
 async function stageOnnxRuntime() {
-  const srcDir = join(TAURI, "node_modules/onnxruntime-node/bin/napi-v3", PLATFORM, ARCH);
+  const napi = join(TAURI, "node_modules/onnxruntime-node/bin/napi-v3");
+  const name = ortDylibName();
+  const destDir = join(RES, "onnxruntime");
+  await rm(destDir, { recursive: true, force: true });
+  await mkdir(destDir, { recursive: true });
+
+  // Universal macOS build (OUT_LOUD_UNIVERSAL): lipo the x64 + arm64 dylibs into a
+  // single fat dylib so one .app runs on both Intel and Apple Silicon.
+  if (PLATFORM === "darwin" && process.env.OUT_LOUD_UNIVERSAL) {
+    const x64 = join(napi, "darwin", "x64", name);
+    const arm = join(napi, "darwin", "arm64", name);
+    for (const p of [x64, arm]) {
+      if (!(await exists(p))) {
+        throw new Error(`universal build needs ${p}. Run \`npm ci\` in tauri/.`);
+      }
+    }
+    const dest = join(destDir, name);
+    execFileSync("lipo", ["-create", x64, arm, "-output", dest], { stdio: "inherit" });
+    await fs.promises.chmod(dest, 0o755);
+    await stripMachO(dest, "onnxruntime (universal)");
+    log(`staged ONNX Runtime universal (${await dirSize(destDir)})`);
+    return;
+  }
+
+  const srcDir = join(napi, PLATFORM, ARCH);
   if (!(await exists(srcDir))) {
     throw new Error(
       `onnxruntime-node binaries not found at ${srcDir}. Run \`npm ci\` in tauri/ ` +
         `(onnxruntime-node@1.20.1 is a build-time source for the ${PLATFORM}/${ARCH} runtime).`
     );
   }
-  const name = ortDylibName();
   const src = join(srcDir, name);
   if (!(await exists(src))) {
     const have = (await fs.promises.readdir(srcDir)).join(", ");
     throw new Error(`Expected ${name} in ${srcDir}; found: ${have}`);
   }
-  const destDir = join(RES, "onnxruntime");
-  await rm(destDir, { recursive: true, force: true });
-  await mkdir(destDir, { recursive: true });
 
   if (PLATFORM === "win32") {
     // Copy onnxruntime.dll + any sibling provider DLLs. No strip on Windows.
