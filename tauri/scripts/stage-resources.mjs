@@ -25,8 +25,21 @@ const PLATFORM = process.platform; // darwin | win32 | linux
 const ARCH = process.arch; // x64 | arm64
 
 // The Intel-compatible ONNX Runtime — last release with a macOS x86_64 binary.
-const ORT_DYLIB = "libonnxruntime.1.20.1.dylib";
 const MB = 1024 * 1024;
+
+// The onnxruntime binary filename per OS (as shipped by onnxruntime-node 1.20.1).
+function ortDylibName() {
+  if (PLATFORM === "win32") return "onnxruntime.dll";
+  if (PLATFORM === "darwin") return "libonnxruntime.1.20.1.dylib";
+  return "libonnxruntime.so.1.20.1";
+}
+
+// Recursive copy with clean-replace semantics (cross-platform; no rsync).
+async function copyTree(src, dest) {
+  await rm(dest, { recursive: true, force: true });
+  await mkdir(dirname(dest), { recursive: true });
+  await cp(src, dest, { recursive: true });
+}
 
 function log(msg) {
   console.log(`[stage] ${msg}`);
@@ -65,99 +78,59 @@ async function stripMachO(p, label) {
 // ---- 1. ONNX Runtime dylib (sourced from the onnxruntime-node dev dependency) -
 
 async function stageOnnxRuntime() {
-  if (PLATFORM !== "darwin") {
-    throw new Error("stage-resources currently targets macOS only");
-  }
-  const dest = join(RES, "onnxruntime", ORT_DYLIB);
-  const src = join(
-    TAURI,
-    "node_modules/onnxruntime-node/bin/napi-v3",
-    PLATFORM,
-    ARCH,
-    ORT_DYLIB
-  );
-  if (!(await exists(src))) {
+  const srcDir = join(TAURI, "node_modules/onnxruntime-node/bin/napi-v3", PLATFORM, ARCH);
+  if (!(await exists(srcDir))) {
     throw new Error(
-      `ONNX Runtime dylib not found at ${src}. Run \`npm install\` in tauri/ ` +
-        `(onnxruntime-node@1.20.1 is a build-time source for the Intel dylib).`
+      `onnxruntime-node binaries not found at ${srcDir}. Run \`npm ci\` in tauri/ ` +
+        `(onnxruntime-node@1.20.1 is a build-time source for the ${PLATFORM}/${ARCH} runtime).`
     );
   }
-  await mkdir(dirname(dest), { recursive: true });
-  await cp(src, dest);
-  await fs.promises.chmod(dest, 0o755);
-  await stripMachO(dest, "onnxruntime");
-  log(`staged ONNX Runtime (${await dirSize(join(RES, "onnxruntime"))})`);
+  const name = ortDylibName();
+  const src = join(srcDir, name);
+  if (!(await exists(src))) {
+    const have = (await fs.promises.readdir(srcDir)).join(", ");
+    throw new Error(`Expected ${name} in ${srcDir}; found: ${have}`);
+  }
+  const destDir = join(RES, "onnxruntime");
+  await rm(destDir, { recursive: true, force: true });
+  await mkdir(destDir, { recursive: true });
+
+  if (PLATFORM === "win32") {
+    // Copy onnxruntime.dll + any sibling provider DLLs. No strip on Windows.
+    for (const f of await fs.promises.readdir(srcDir)) {
+      if (f.endsWith(".dll")) await cp(join(srcDir, f), join(destDir, f));
+    }
+  } else {
+    const dest = join(destDir, name);
+    await cp(src, dest);
+    await fs.promises.chmod(dest, 0o755);
+    await stripMachO(dest, "onnxruntime");
+  }
+  log(`staged ONNX Runtime (${await dirSize(destDir)})`);
 }
 
 // ---- 2. espeak-ng-data ------------------------------------------------------
 
 async function stageEspeakData() {
-  // Complete compiled espeak-ng 1.52 data. Source order: env override, then the
-  // common Homebrew locations. (TODO: trim to the 8 supported languages; vendor
-  // a portable copy for CI instead of relying on a local install.)
-  const candidates = [
-    process.env.OUT_LOUD_ESPEAK_DATA,
-    "/usr/local/Cellar/espeak-ng/1.52.0/share/espeak-ng-data",
-    "/opt/homebrew/share/espeak-ng-data",
-    "/usr/share/espeak-ng-data",
-  ].filter(Boolean);
-
-  let src = null;
-  for (const c of candidates) {
-    if (await exists(join(c, "phontab"))) {
-      src = c;
-      break;
-    }
+  // espeak-ng-data is vendored at the repo root (trimmed to the 8 supported
+  // languages, ~4 MB). Platform-independent, so the build is reproducible and
+  // cross-platform with no system install (brew/apt/download) required.
+  const src = join(REPO, "espeak-ng-data");
+  if (!(await exists(join(src, "phontab")))) {
+    throw new Error(`Vendored espeak-ng-data not found at ${src} (expected a phontab file).`);
   }
-  if (!src) {
-    throw new Error(
-      `Complete espeak-ng-data not found (looked for phontab in: ${candidates.join(", ")}). ` +
-        `Install espeak-ng (\`brew install espeak-ng\`) or set OUT_LOUD_ESPEAK_DATA.`
-    );
-  }
-  const dest = join(RES, "espeak", "espeak-ng-data");
-  await rm(join(RES, "espeak"), { recursive: true, force: true });
-  await mkdir(dirname(dest), { recursive: true });
-  // rsync preserves the tree; --delete keeps it clean across rebuilds.
-  execFileSync("rsync", ["-a", "--delete", src + "/", dest + "/"], { stdio: "inherit" });
-
-  // Trim to the supported languages. ~22 MB of the 25 MB is per-language `*_dict`
-  // files for ~110 languages we don't use (ru_dict alone is 8 MB). espeak loads a
-  // dict only when its language is selected, so dropping unused ones is safe. We
-  // keep the shared phoneme tables (phon*, intonations), lang/, voices/, and the
-  // dicts for our 8 languages (en covers en-us + en-gb).
-  const keepDicts = new Set([
-    "en_dict", "es_dict", "it_dict", "pt_dict", "hi_dict", "ja_dict", "cmn_dict",
-  ]);
-  let removedDicts = 0;
-  let removedBytes = 0;
-  for (const entry of await fs.promises.readdir(dest)) {
-    if (entry.endsWith("_dict") && !keepDicts.has(entry)) {
-      const p = join(dest, entry);
-      removedBytes += (await stat(p)).size;
-      await rm(p, { force: true });
-      removedDicts++;
-    }
-  }
-  // MBROLA phoneme data + sound icons are unused (we emit IPA, not synthesis).
-  await rm(join(dest, "mbrola_ph"), { recursive: true, force: true });
-  await rm(join(dest, "soundicons"), { recursive: true, force: true });
-  log(
-    `trimmed espeak: dropped ${removedDicts} unused dicts (~${(removedBytes / MB).toFixed(0)}MB)`
-  );
-  log(`staged espeak-ng-data from ${src} (${await dirSize(join(RES, "espeak"))})`);
+  await copyTree(src, join(RES, "espeak", "espeak-ng-data"));
+  log(`staged espeak-ng-data (${await dirSize(join(RES, "espeak"))})`);
 }
 
 // ---- 3. models + openapi ----------------------------------------------------
 
 async function stageModels() {
-  const src = join(REPO, "electron", "models");
+  const src = join(REPO, "models");
   if (!(await exists(join(src, "model_q8f16.onnx")))) {
     throw new Error(`Models not found at ${src}.`);
   }
-  execFileSync("rsync", ["-a", "--delete", src + "/", join(RES, "models") + "/"], {
-    stdio: "inherit",
-  });
+  await copyTree(src, join(RES, "models"));
   log(`staged models (${await dirSize(join(RES, "models"))})`);
 }
 

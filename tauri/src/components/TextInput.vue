@@ -130,10 +130,7 @@ const textChunks = computed(() => getTextChunks(props.modelValue));
 
 const showHighlight = computed(
   () =>
-    props.highlightChunk &&
-    props.isPlaying &&
-    props.currentChunkIndex >= 0 &&
-    props.totalChunks > 0
+    props.highlightChunk && props.isPlaying && props.currentChunkIndex >= 0 && props.totalChunks > 0
 );
 
 const highlightedTextChunkIndex = computed(() => {

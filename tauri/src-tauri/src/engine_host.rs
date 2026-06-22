@@ -9,8 +9,36 @@ use std::sync::Arc;
 use tauri::{AppHandle, Manager};
 
 const API_PORT: u16 = 51730;
-// macOS only for now (the Intel build target). TODO: win/linux dylib names.
-const DYLIB_NAME: &str = "libonnxruntime.1.20.1.dylib";
+
+// The onnxruntime dylib filename per OS (as shipped by onnxruntime-node 1.20.1
+// and staged into resources/onnxruntime/ by stage-resources.mjs).
+fn dylib_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "onnxruntime.dll"
+    } else if cfg!(target_os = "macos") {
+        "libonnxruntime.1.20.1.dylib"
+    } else {
+        "libonnxruntime.so.1.20.1"
+    }
+}
+
+// onnxruntime-node binary layout for the dev fallback: bin/napi-v3/<plat>/<arch>.
+fn napi_platform() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "win32"
+    } else if cfg!(target_os = "macos") {
+        "darwin"
+    } else {
+        "linux"
+    }
+}
+fn napi_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "arm64",
+        other => other,
+    }
+}
 
 struct Paths {
     models: PathBuf,
@@ -33,23 +61,31 @@ fn resolve(app: &AppHandle) -> Paths {
         let root = manifest.parent().unwrap().to_path_buf(); // …/tauri
         let repo = root.parent().unwrap().to_path_buf(); // …/out-loud
         let res = manifest.join("resources");
+        let node_ort = root
+            .join("node_modules/onnxruntime-node/bin/napi-v3")
+            .join(napi_platform())
+            .join(napi_arch())
+            .join(dylib_name());
         let dylib = first_existing(
             [
                 env_path("OUT_LOUD_ORT_DYLIB"),
-                Some(res.join("onnxruntime").join(DYLIB_NAME)),
-                Some(root.join("node_modules/onnxruntime-node/bin/napi-v3/darwin/x64").join(DYLIB_NAME)),
+                Some(res.join("onnxruntime").join(dylib_name())),
+                Some(node_ort),
             ]
             .into_iter()
             .flatten()
             .collect(),
         )
-        .unwrap_or_else(|| res.join("onnxruntime").join(DYLIB_NAME));
+        .unwrap_or_else(|| res.join("onnxruntime").join(dylib_name()));
         let espeak_data = first_existing(
             [
                 env_path("PIPER_ESPEAKNG_DATA_DIRECTORY"),
                 Some(res.join("espeak")),
+                Some(repo.clone()), // vendored espeak-ng-data/ lives at the repo root
                 Some(PathBuf::from("/usr/local/Cellar/espeak-ng/1.52.0/share")),
                 Some(PathBuf::from("/opt/homebrew/share")),
+                Some(PathBuf::from("/usr/share")),
+                Some(PathBuf::from("/usr/lib/x86_64-linux-gnu")),
             ]
             .into_iter()
             .flatten()
@@ -57,7 +93,7 @@ fn resolve(app: &AppHandle) -> Paths {
         )
         .unwrap_or_else(|| res.join("espeak"));
         Paths {
-            models: repo.join("electron/models"),
+            models: repo.join("models"),
             dylib,
             espeak_data,
             openapi: repo.join("docs/app/openapi.yaml"),
@@ -66,7 +102,7 @@ fn resolve(app: &AppHandle) -> Paths {
         let res = app.path().resource_dir().unwrap_or_else(|_| PathBuf::from("."));
         Paths {
             models: res.join("models"),
-            dylib: res.join("onnxruntime").join(DYLIB_NAME),
+            dylib: res.join("onnxruntime").join(dylib_name()),
             espeak_data: res.join("espeak"),
             openapi: res.join("openapi.yaml"),
         }

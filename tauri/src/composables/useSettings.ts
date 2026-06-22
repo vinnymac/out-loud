@@ -1,10 +1,5 @@
 import { ref, watch, onMounted, onBeforeUnmount } from "vue";
-import {
-  DEFAULT_SETTINGS,
-  DEFAULT_TEXT,
-  SETTINGS_STORAGE_KEY,
-  type Settings,
-} from "~/constants";
+import { DEFAULT_SETTINGS, DEFAULT_TEXT, SETTINGS_STORAGE_KEY, type Settings } from "~/constants";
 import { updateSettings } from "~/lib/ipc";
 import { onSettings } from "~/lib/tts-client";
 

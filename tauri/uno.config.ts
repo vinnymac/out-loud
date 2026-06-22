@@ -26,7 +26,10 @@ export default defineConfig({
   theme,
   shortcuts: [
     // Consistent, accessible focus ring (npmx convention).
-    ["focus-ring", "outline-none focus-visible:(ring-2 ring-accent/50 ring-offset-2 ring-offset-bg)"],
+    [
+      "focus-ring",
+      "outline-none focus-visible:(ring-2 ring-accent/50 ring-offset-2 ring-offset-bg)",
+    ],
     // Neutral secondary button used for footer actions (?, Quit) and the like.
     [
       "btn-ghost",

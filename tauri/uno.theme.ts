@@ -42,7 +42,8 @@ export const theme = {
   animation: {
     keyframes: {
       "fade-in": "{from { opacity: 0 } to { opacity: 1 }}",
-      "scale-in": "{from { opacity: 0; transform: scale(0.97) } to { opacity: 1; transform: scale(1) }}",
+      "scale-in":
+        "{from { opacity: 0; transform: scale(0.97) } to { opacity: 1; transform: scale(1) }}",
     },
     durations: {
       "fade-in": "0.18s",

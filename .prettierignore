@@ -2,20 +2,20 @@
 node_modules/
 
 # Build artifacts
-build/
 dist/
 releases/
-electron-ui/dist/
-tray-app/dist/
+tauri/dist/
+tauri/src-tauri/target/
+tauri/src-tauri/engine/target/
+tauri/src-tauri/gen/
+tauri/src-tauri/resources/
 chrome-extension/dist/
 
-# Compiled TypeScript
-electron/**/*.js
-electron/**/*.js.map
-
-# Vendored libraries
+# Vendored / binary assets (not source)
+models/
+espeak-ng-data/
 chrome-extension/lib/
-electron-ui/src/reader/vendor/
+tauri/src/reader/vendor/
 
 # Lockfiles
 package-lock.json

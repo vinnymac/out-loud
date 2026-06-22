@@ -82,14 +82,14 @@ or from the repo root: `npm run tauri:install` then `npm run tauri:dev`.
 
 Useful scripts:
 
-| Script | What it does |
-| --- | --- |
-| `npm run dev` | Vite dev server only |
+| Script                  | What it does                                       |
+| ----------------------- | -------------------------------------------------- |
+| `npm run dev`           | Vite dev server only                               |
 | `npm run sidecar:build` | Bundle the Node sidecar (esbuild → `sidecar/dist`) |
-| `npm run typecheck` | `vue-tsc --noEmit` |
-| `npm run build` | Typecheck + production frontend build |
-| `npm run tauri:dev` | Sidecar build + `tauri dev` |
-| `npm run tauri:build` | Sidecar build + `tauri build` |
+| `npm run typecheck`     | `vue-tsc --noEmit`                                 |
+| `npm run build`         | Typecheck + production frontend build              |
+| `npm run tauri:dev`     | Sidecar build + `tauri dev`                        |
+| `npm run tauri:build`   | Sidecar build + `tauri build`                      |
 
 ## Packaging notes (production)
 

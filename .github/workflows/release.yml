@@ -1,35 +1,76 @@
 name: Release
 
+# Builds the native-Rust Tauri app for macOS (Intel + Apple Silicon), Windows, and
+# Linux, packs the Chrome extension, and publishes a DRAFT GitHub Release.
+#
+#   pull_request -> full matrix build (validates parity; no release)
+#   tag v* / dispatch -> matrix build + (optional macOS sign/notarize) + draft release
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build (e.g. v1.0.1). Create it first with `git tag`."
+        description: "Existing tag to build/release (e.g. v2.1.0). Create it first with `git tag`."
         required: true
+  pull_request:
+    branches: [main]
+    paths:
+      - "tauri/**"
+      - "models/**"
+      - "espeak-ng-data/**"
+      - ".github/workflows/release.yml"
 
 permissions:
   contents: write # to attach assets to the GitHub Release
 
 jobs:
-  desktop:
-    name: Build ${{ matrix.os }}
+  build:
+    name: Build ${{ matrix.label }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            script: electron:build:mac
-            output_dir: releases/macos
-          - os: windows-latest
-            script: electron:build:win
-            output_dir: releases/windows
-          - os: ubuntu-latest
-            script: electron:build:linux
-            output_dir: releases/linux
+          # macOS x64 MUST be Intel (macos-13): onnxruntime is 1.20.1, the last
+          # release with a macOS x86_64 binary.
+          - {
+              label: "macOS (Intel)",
+              os: macos-13,
+              bundles: "app",
+              glob: "src-tauri/target/release/bundle/dmg/*.dmg",
+            }
+          - {
+              label: "macOS (Apple Silicon)",
+              os: macos-14,
+              bundles: "app",
+              glob: "src-tauri/target/release/bundle/dmg/*.dmg",
+            }
+          - {
+              label: "Windows (x64)",
+              os: windows-latest,
+              bundles: "nsis",
+              glob: "src-tauri/target/release/bundle/nsis/*-setup.exe",
+            }
+          - {
+              label: "Linux (x64)",
+              os: ubuntu-22.04,
+              bundles: "deb",
+              glob: "src-tauri/target/release/bundle/deb/*.deb",
+            }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: tauri
+    env:
+      # macOS Developer ID signing — OPTIONAL (skipped unless APPLE_SIGNING_IDENTITY
+      # is set). Mapped from the repo's existing secrets to the names codesign expects.
+      APPLE_CERTIFICATE: ${{ secrets.CSC_LINK }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,89 +81,102 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
 
-      - name: Install root dependencies
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "tauri/src-tauri -> target"
+
+      # espeak-ng-data is vendored in the repo, so no system espeak install is
+      # needed anywhere. We only need cmake (+ a C compiler) to build the vendored
+      # espeak-ng C in espeak-rs-sys, and the Tauri/WebKit system libs on Linux.
+      - name: Linux system deps
+        if: runner.os == 'Linux'
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf build-essential cmake libssl-dev
+
+      - name: macOS deps (cmake)
+        if: runner.os == 'macOS'
+        working-directory: .
+        run: brew install cmake || true
+
+      - name: Install JS deps (frontend + build-time onnxruntime-node binary)
         run: npm ci
 
-      - name: Install electron-ui dependencies
-        run: npm --prefix electron-ui ci
+      - name: Stage resources (onnxruntime + espeak-ng-data + models + openapi)
+        run: npm run stage
 
-      - name: Build
-        run: npm run ${{ matrix.script }}
-        env:
-          # macOS Developer ID signing + Apple notarization.
-          # All values come from repository secrets — see docs/build/releasing.md
-          # for how to set them up. On Linux/Windows runners these are simply
-          # unused by electron-builder.
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Windows Authenticode signing (optional — leave secrets unset to
-          # ship an unsigned EXE that triggers SmartScreen on first run).
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-          # Intentionally NOT setting GH_TOKEN here — electron-builder would
-          # auto-trigger implicit GitHub publishing on tag push, conflicting
-          # with the softprops/action-gh-release step in the release job.
+      - name: Build app bundle
+        run: npx tauri build --bundles ${{ matrix.bundles }}
 
-      - name: Upload desktop artifacts
+      # macOS-only: deep-sign (nested onnxruntime dylib + hardened runtime), package
+      # the LZMA DMG, then notarize. All gated on APPLE_SIGNING_IDENTITY being set.
+      - name: Sign .app (macOS, Developer ID)
+        if: ${{ runner.os == 'macOS' && github.event_name != 'pull_request' && env.APPLE_SIGNING_IDENTITY != '' }}
+        run: |
+          APP="src-tauri/target/release/bundle/macos/Out Loud.app"
+          codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+      - name: Package DMG (macOS, LZMA/ULMO)
+        if: runner.os == 'macOS'
+        run: npm run dmg
+
+      - name: Notarize + staple DMG (macOS)
+        if: ${{ runner.os == 'macOS' && github.event_name != 'pull_request' && env.APPLE_SIGNING_IDENTITY != '' && env.APPLE_ID != '' }}
+        run: |
+          DMG=$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$DMG"
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-${{ matrix.os }}
-          path: |
-            ${{ matrix.output_dir }}/*.dmg
-            ${{ matrix.output_dir }}/*.zip
-            ${{ matrix.output_dir }}/*.exe
-            ${{ matrix.output_dir }}/*.AppImage
-            ${{ matrix.output_dir }}/*.deb
-            ${{ matrix.output_dir }}/*.blockmap
-          if-no-files-found: warn
+          name: out-loud-${{ matrix.os }}
+          path: tauri/${{ matrix.glob }}
+          if-no-files-found: error
 
   extensions:
-    name: Pack extensions
+    name: Pack Chrome extension
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - name: Pack Chrome extension
+      - name: Pack
         run: |
           mkdir -p releases/extensions
           cd chrome-extension
-          zip -r ../releases/extensions/out-loud-chrome.zip . \
-            -x '*.DS_Store' \
-            -x 'package-lock.json' \
-            -x 'node_modules/*'
-
-      - name: Upload extension artifact
-        uses: actions/upload-artifact@v4
+          zip -r ../releases/extensions/out-loud-chrome.zip . -x '*.DS_Store' -x 'node_modules/*'
+      - uses: actions/upload-artifact@v4
         with:
           name: chrome-extension
           path: releases/extensions/out-loud-chrome.zip
 
   release:
-    name: Create GitHub Release
-    needs: [desktop, extensions]
+    name: Create GitHub Release (draft)
+    needs: [build, extensions]
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-
-      - name: Flatten artifacts into a single folder
+      - name: Flatten into release-assets/
         run: |
           mkdir -p release-assets
-          find artifacts -mindepth 2 -type f -print0 | xargs -0 -I{} cp {} release-assets/
+          find artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.deb' -o -name '*.zip' \) -exec cp {} release-assets/ \;
           ls -la release-assets
-
       - name: Publish GitHub Release (draft)
         uses: softprops/action-gh-release@v2
         with:

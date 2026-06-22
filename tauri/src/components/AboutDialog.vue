@@ -88,9 +88,7 @@ const shortcuts = [
         <p class="text-gray-400">{{ t("about.pausesPunctuation") }}</p>
       </section>
 
-      <section
-        class="flex flex-wrap gap-x-4 gap-y-1 border-t border-gray-800 pt-3 text-gray-400"
-      >
+      <section class="flex flex-wrap gap-x-4 gap-y-1 border-t border-gray-800 pt-3 text-gray-400">
         <button class="hover:text-gray-200" @click="emit('openUrl', 'https://www.out-loud.io')">
           {{ t("about.website") }}
         </button>

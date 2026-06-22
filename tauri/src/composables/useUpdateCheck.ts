@@ -1,5 +1,11 @@
 import { ref, onMounted, onBeforeUnmount } from "vue";
-import { getUpdate, skipVersion, openExternal, onUpdateAvailable, type UpdateInfo } from "~/lib/ipc";
+import {
+  getUpdate,
+  skipVersion,
+  openExternal,
+  onUpdateAvailable,
+  type UpdateInfo,
+} from "~/lib/ipc";
 import { track } from "~/lib/analytics";
 
 export type { UpdateInfo };

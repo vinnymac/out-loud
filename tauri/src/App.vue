@@ -313,11 +313,6 @@ const srStatus = computed(() => {
       </div>
     </div>
 
-    <AboutDialog
-      :open="aboutOpen"
-      :version="version"
-      @close="aboutOpen = false"
-      @open-url="open"
-    />
+    <AboutDialog :open="aboutOpen" :version="version" @close="aboutOpen = false" @open-url="open" />
   </div>
 </template>

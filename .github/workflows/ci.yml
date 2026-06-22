@@ -7,11 +7,10 @@ on:
     branches: [main]
 
 jobs:
-  check:
-    name: Lint, test, typecheck, build
+  frontend:
+    name: Frontend typecheck + format
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,28 +19,46 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
 
-      - name: Install root dependencies
+      - name: Install root deps (prettier)
         run: npm ci
-
-      - name: Install electron-ui dependencies
-        run: npm --prefix electron-ui ci
-
-      - name: Lint
-        run: npm run lint
 
       - name: Format check
         run: npm run format:check
 
-      - name: Knip (unused code/deps)
-        run: npm run knip
+      - name: Install Tauri frontend deps
+        working-directory: tauri
+        run: npm ci
 
-      - name: Unit tests
-        run: npm test
+      - name: Typecheck (vue-tsc)
+        working-directory: tauri
+        run: npm run typecheck
 
-      - name: Typecheck Electron main
-        run: npm run electron:compile
+      - name: Build frontend (vite)
+        working-directory: tauri
+        run: npm run build
 
-      - name: Build renderer UI
-        run: npm --prefix electron-ui run build
+  engine:
+    name: Engine unit tests
+    runs-on: macos-13
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "tauri/src-tauri/engine -> target"
+
+      - name: cmake
+        run: brew install cmake || true
+
+      # Pure-logic unit tests (tokenize/text/voices/audio). The ONNX integration
+      # test self-skips without ORT_DYLIB_PATH, so no model/dylib is needed here.
+      - name: cargo test
+        working-directory: tauri/src-tauri/engine
+        run: cargo test

@@ -166,9 +166,9 @@ xcrun notarytool store-credentials "out-loud-notary" \
 
 ### macOS first-launch UX
 
-| Build state | What users see on first launch |
-| ----------- | ------------------------------ |
-| Developer-ID signed AND notarized (after running `notarize-release.mjs`) | App opens immediately, no dialog. |
+| Build state                                                                     | What users see on first launch                                                                                                                      |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Developer-ID signed AND notarized (after running `notarize-release.mjs`)        | App opens immediately, no dialog.                                                                                                                   |
 | Developer-ID signed, NOT notarized (raw CI output, or if you skip notarization) | "macOS cannot verify the developer of Out Loud." Right-click → Open (macOS 14-), or System Settings → Privacy & Security → Open Anyway (macOS 15+). |
 
 End-user instructions for the second case live in the [main README](../../README.md#macos-first-launch).
@@ -177,10 +177,10 @@ End-user instructions for the second case live in the [main README](../../README
 
 CI signs but doesn't notarize, so it only needs the signing pair. These should be set as GitHub repository secrets:
 
-| Secret                        | Used by | Source                                                   |
-| ----------------------------- | ------- | -------------------------------------------------------- |
-| `CSC_LINK`                    | CI      | Base64-encoded `.p12` certificate                        |
-| `CSC_KEY_PASSWORD`            | CI      | Password for the `.p12`                                  |
+| Secret             | Used by | Source                            |
+| ------------------ | ------- | --------------------------------- |
+| `CSC_LINK`         | CI      | Base64-encoded `.p12` certificate |
+| `CSC_KEY_PASSWORD` | CI      | Password for the `.p12`           |
 
 The notarize-release script runs locally and uses the Keychain profile (`out-loud-notary`) you set up with `xcrun notarytool store-credentials`. No env vars needed for the script.
 
@@ -190,10 +190,10 @@ For Mac App Store (not Developer ID direct distribution), see [`mac-app-store.md
 
 ### Windows
 
-| Secret                  | Source                                  |
-| ----------------------- | --------------------------------------- |
-| `WIN_CSC_LINK`          | Base64-encoded `.pfx` certificate       |
-| `WIN_CSC_KEY_PASSWORD`  | Password for the `.pfx`                 |
+| Secret                 | Source                            |
+| ---------------------- | --------------------------------- |
+| `WIN_CSC_LINK`         | Base64-encoded `.pfx` certificate |
+| `WIN_CSC_KEY_PASSWORD` | Password for the `.pfx`           |
 
 Without these, the Windows installer ships unsigned and SmartScreen prompts users to confirm on first run.
 
