@@ -1,10 +1,19 @@
 name: Release
 
-# Builds the native-Rust Tauri app for macOS (universal: Intel + Apple Silicon),
+# Builds the native-Rust Tauri app for macOS (Intel x64 + Apple Silicon arm64),
 # Windows, and Linux, packs the Chrome extension, and publishes a DRAFT Release.
 #
 #   pull_request -> full matrix build (validates parity; no release)
 #   tag v* / dispatch -> matrix build + (optional macOS sign/notarize) + draft release
+#
+# macOS note: we do NOT build a universal binary. `tauri build --target
+# universal-apple-darwin` compiles each arch with an explicit target triple, which
+# makes cmake-rs set -DCMAKE_OSX_ARCHITECTURES and breaks espeak-rs-sys's espeak-ng
+# `data` compile DETERMINISTICALLY (see memory: espeak-universal-build-blocker).
+# Instead both macOS slices are NATIVE builds on the fast macos-14 runner: arm64
+# natively, and x64 under Rosetta 2 with an x86_64 toolchain (node/rust/cmake) so it
+# is a native x86_64 build (working espeak path) — never `--target`. This avoids the
+# slow/scarce/deprecated macos-13 Intel runner while keeping Intel support.
 on:
   push:
     tags: ["v*"]
@@ -36,34 +45,43 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # ONE universal macOS build on the fast Apple Silicon runner (cross-builds
-          # x86_64 + arm64 and lipos them). Avoids the slow/scarce/deprecated macos-13
-          # Intel runner entirely and ships a single .dmg for both architectures.
+          # macOS arm64 — native on Apple Silicon.
           - {
-              label: "macOS (universal)",
+              label: "macOS (arm64)",
               os: macos-14,
+              arch: arm64,
+              node_arch: arm64,
               bundles: "app",
-              target_flag: "--target universal-apple-darwin",
-              rust_targets: "x86_64-apple-darwin,aarch64-apple-darwin",
-              universal: "1",
-              glob: "src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg",
+              rosetta: "",
+              glob: "src-tauri/target/release/bundle/dmg/*aarch64.dmg",
+            }
+          # macOS x64 — native x86_64 under Rosetta on the same fast runner (no
+          # macos-13). x86_64 node + rust + universal2 cmake => native x64 build.
+          - {
+              label: "macOS (x64)",
+              os: macos-14,
+              arch: x64,
+              node_arch: x64,
+              bundles: "app",
+              rosetta: "1",
+              glob: "src-tauri/target/release/bundle/dmg/*x64.dmg",
             }
           - {
               label: "Windows (x64)",
               os: windows-latest,
+              arch: x64,
+              node_arch: x64,
               bundles: "nsis",
-              target_flag: "",
-              rust_targets: "",
-              universal: "",
+              rosetta: "",
               glob: "src-tauri/target/release/bundle/nsis/*-setup.exe",
             }
           - {
               label: "Linux (x64)",
               os: ubuntu-22.04,
+              arch: x64,
+              node_arch: x64,
               bundles: "deb",
-              target_flag: "",
-              rust_targets: "",
-              universal: "",
+              rosetta: "",
               glob: "src-tauri/target/release/bundle/deb/*.deb",
             }
     runs-on: ${{ matrix.os }}
@@ -79,9 +97,13 @@ jobs:
       # gated, self-contained "Sign .app" step. SIGN_MACOS is a plain boolean flag
       # (not a var Tauri recognizes), true only when an identity secret exists.
       SIGN_MACOS: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
-      # The macOS .app lives under a target-triple dir for the universal build.
-      MAC_APP: src-tauri/target/universal-apple-darwin/release/bundle/macos/Out Loud.app
-      MAC_DMG_DIR: src-tauri/target/universal-apple-darwin/release/bundle/dmg
+      MAC_APP: src-tauri/target/release/bundle/macos/Out Loud.app
+      MAC_DMG_DIR: src-tauri/target/release/bundle/dmg
+      # Pin to Tauri's default minimum so the serial espeak pre-build below and the
+      # parallel `tauri build` share a build fingerprint. If they differed, cargo
+      # would re-run espeak-rs-sys's build script under the parallel build and could
+      # re-trigger the espeak-ng data-target race the pre-build exists to avoid.
+      MACOSX_DEPLOYMENT_TARGET: "10.13"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -92,11 +114,22 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          architecture: ${{ matrix.node_arch }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.rust_targets }}
+
+      # macOS x64 only: native x86_64 build under Rosetta. Install Rosetta + the
+      # x86_64 Rust toolchain and make it the default, so `cargo` runs as x86_64
+      # (under Rosetta) and produces a native x86_64 build (host == target, no
+      # CMAKE_OSX_ARCHITECTURES => the espeak-ng path that actually works).
+      - name: Set up x86_64 toolchain under Rosetta (macOS x64)
+        if: ${{ matrix.rosetta == '1' }}
+        run: |
+          softwareupdate --install-rosetta --agree-to-license || true
+          rustup toolchain install stable-x86_64-apple-darwin
+          rustup default stable-x86_64-apple-darwin
+          rustc -vV
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -115,21 +148,63 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev patchelf build-essential cmake libssl-dev
 
-      - name: macOS deps (cmake)
-        if: runner.os == 'macOS'
+      - name: macOS deps (cmake, arm64)
+        if: ${{ runner.os == 'macOS' && matrix.rosetta != '1' }}
         working-directory: .
         run: brew install cmake || true
+
+      # Homebrew cmake is arm64-only, which would compile espeak as arm64 under the
+      # x86_64 toolchain. The pip `cmake` wheel is universal2, so under the x86_64
+      # cargo it runs as x86_64 (Rosetta) and emits x86_64 objects. Prepend it.
+      - name: macOS deps (universal2 cmake via pip, x64)
+        if: ${{ matrix.rosetta == '1' }}
+        working-directory: .
+        run: |
+          python3 -m pip install --upgrade --break-system-packages cmake
+          CMBIN=$(python3 -c "import cmake; print(cmake.CMAKE_BIN_DIR)")
+          echo "$CMBIN" >> "$GITHUB_PATH"
+          echo "universal2 cmake at: $CMBIN"
+          file "$CMBIN/cmake"
 
       - name: Install JS deps (frontend + build-time onnxruntime-node binary)
         run: npm ci
 
       - name: Stage resources (onnxruntime + espeak-ng-data + models + openapi)
-        env:
-          OUT_LOUD_UNIVERSAL: ${{ matrix.universal }}
         run: npm run stage
 
+      # espeak-rs-sys vendors espeak-ng and compiles its phoneme `data` target via
+      # CMake. That target copies phsource into the build dir and compiles it as two
+      # under-synchronized custom commands, so under parallel make it can read a
+      # half-copied spectral file -> "Failed to open ..." -> phondata Error 1.
+      # Building ONLY this crate with CARGO_BUILD_JOBS=1 forces a serial (race-free)
+      # cmake build; the heavy parallel `tauri build` below reuses the cached result.
+      - name: Pre-build espeak-rs-sys serially (avoid espeak-ng data-target race)
+        if: runner.os == 'macOS'
+        working-directory: tauri/src-tauri
+        run: CARGO_BUILD_JOBS=1 cargo build --release -p espeak-rs-sys
+
       - name: Build app bundle
-        run: npx tauri build ${{ matrix.target_flag }} --bundles ${{ matrix.bundles }}
+        run: npx tauri build --bundles ${{ matrix.bundles }}
+
+      # Crash loudly if the Rosetta/native plumbing silently produced the wrong arch
+      # (e.g. an arm64 binary in the "x64" job) instead of shipping a broken DMG.
+      - name: Verify .app architecture (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          BIN="$MAC_APP/Contents/MacOS/Out Loud"
+          DYLIB=$(ls "$MAC_APP/Contents/Resources/onnxruntime/"*.dylib | head -1)
+          case "${{ matrix.arch }}" in
+            x64) want="x86_64" ;;
+            arm64) want="arm64" ;;
+          esac
+          for f in "$BIN" "$DYLIB"; do
+            got=$(lipo -archs "$f")
+            echo "$f -> $got (want $want)"
+            if [ "$got" != "$want" ]; then
+              echo "::error::architecture mismatch in $f: got '$got', want '$want'"
+              exit 1
+            fi
+          done
 
       # macOS-only: deep-sign (nested onnxruntime dylib + hardened runtime). Gated on
       # an APPLE_SIGNING_IDENTITY secret; ad-hoc otherwise.
@@ -169,7 +244,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: out-loud-${{ matrix.os }}
+          name: out-loud-${{ matrix.os }}-${{ matrix.arch }}
           path: tauri/${{ matrix.glob }}
           if-no-files-found: error
 

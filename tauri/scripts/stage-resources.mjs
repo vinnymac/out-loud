@@ -84,24 +84,10 @@ async function stageOnnxRuntime() {
   await rm(destDir, { recursive: true, force: true });
   await mkdir(destDir, { recursive: true });
 
-  // Universal macOS build (OUT_LOUD_UNIVERSAL): lipo the x64 + arm64 dylibs into a
-  // single fat dylib so one .app runs on both Intel and Apple Silicon.
-  if (PLATFORM === "darwin" && process.env.OUT_LOUD_UNIVERSAL) {
-    const x64 = join(napi, "darwin", "x64", name);
-    const arm = join(napi, "darwin", "arm64", name);
-    for (const p of [x64, arm]) {
-      if (!(await exists(p))) {
-        throw new Error(`universal build needs ${p}. Run \`npm ci\` in tauri/.`);
-      }
-    }
-    const dest = join(destDir, name);
-    execFileSync("lipo", ["-create", x64, arm, "-output", dest], { stdio: "inherit" });
-    await fs.promises.chmod(dest, 0o755);
-    await stripMachO(dest, "onnxruntime (universal)");
-    log(`staged ONNX Runtime universal (${await dirSize(destDir)})`);
-    return;
-  }
-
+  // Per-arch native staging: pick the dylib matching this Node's arch. The macOS
+  // x64 build runs under an x86_64 Node (Rosetta), so process.arch is "x64" there
+  // and "arm64" on Apple Silicon — each ships its own native onnxruntime. (We do
+  // NOT build a universal binary; see .github/workflows/release.yml for why.)
   const srcDir = join(napi, PLATFORM, ARCH);
   if (!(await exists(srcDir))) {
     throw new Error(

@@ -4,8 +4,8 @@
 // We own this step instead of Tauri's `dmg` bundle target: that target runs an
 // AppleScript to lay out the installer window, which HANGS in a headless/CI
 // session (no Apple Events). tauri.conf.json builds only the `app` target and we
-// package the DMG here. Handles both a per-arch build (target/release/bundle) and
-// a universal build (target/universal-apple-darwin/release/bundle).
+// package the DMG here. We build per-arch NATIVE bundles (target/release/bundle) —
+// not a universal binary; see .github/workflows/release.yml for why.
 //
 // Crashes loudly if the .app is missing or hdiutil fails.
 import { execFileSync } from "node:child_process";
@@ -18,11 +18,7 @@ const TAURI = join(__dirname, "..");
 const TARGET = join(TAURI, "src-tauri", "target");
 const APP_NAME = "Out Loud.app";
 
-// Prefer the universal bundle if present, else the per-arch one.
-const BUNDLE_CANDIDATES = [
-  join(TARGET, "universal-apple-darwin", "release", "bundle"),
-  join(TARGET, "release", "bundle"),
-];
+const BUNDLE = join(TARGET, "release", "bundle");
 
 const FORMAT = "ULMO"; // LZMA — macOS 10.15+
 const VOLNAME = "Out Loud";
@@ -40,8 +36,9 @@ async function exists(p) {
   }
 }
 
-function archTag(bundle) {
-  if (bundle.includes("universal-apple-darwin")) return "universal";
+// Tag by the running Node's arch: "x64" under the Rosetta x86_64 Node, "aarch64"
+// on Apple Silicon. Matches the artifact globs in release.yml.
+function archTag() {
   if (process.arch === "arm64") return "aarch64";
   if (process.arch === "x64") return "x64";
   return process.arch;
@@ -52,23 +49,15 @@ async function main() {
     throw new Error("make-dmg.mjs is macOS-only (uses hdiutil/ditto).");
   }
 
-  let bundle = null;
-  for (const b of BUNDLE_CANDIDATES) {
-    if (await exists(join(b, "macos", APP_NAME))) {
-      bundle = b;
-      break;
-    }
-  }
-  if (!bundle) {
-    throw new Error(
-      `No ${APP_NAME} under any of: ${BUNDLE_CANDIDATES.join(", ")}. Run \`tauri build\` first.`
-    );
+  const bundle = BUNDLE;
+  if (!(await exists(join(bundle, "macos", APP_NAME)))) {
+    throw new Error(`No ${APP_NAME} under ${bundle}. Run \`tauri build\` first.`);
   }
 
   const app = join(bundle, "macos", APP_NAME);
   const dmgDir = join(bundle, "dmg");
   const { version } = JSON.parse(await readFile(join(TAURI, "package.json"), "utf8"));
-  const out = join(dmgDir, `Out Loud_${version}_${archTag(bundle)}.dmg`);
+  const out = join(dmgDir, `Out Loud_${version}_${archTag()}.dmg`);
   await mkdir(dmgDir, { recursive: true });
   await rm(out, { force: true }); // always rebuild from the fresh .app
 
