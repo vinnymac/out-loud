@@ -33,6 +33,9 @@
     "npm": ">=10"
   },
   "scripts": {
+    "tauri:install": "cd tauri && npm install",
+    "tauri:dev": "cd tauri && npm run tauri:dev",
+    "tauri:build": "cd tauri && npm run tauri:build",
     "format": "prettier . --write",
     "format:check": "prettier . --check",
     "lint": "eslint .",

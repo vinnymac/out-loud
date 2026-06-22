@@ -1,0 +1,31 @@
+[package]
+name = "out-loud-engine"
+version = "0.1.0"
+edition = "2021"
+# espeak-ng (vendored by espeak-rs) is GPLv3, so the combined work is GPLv3.
+license = "GPL-3.0-or-later"
+description = "Native Rust Kokoro-82M TTS engine for Out Loud (phonemize → ONNX → audio)."
+
+[dependencies]
+# ONNX Runtime: rc.9 targets ORT 1.20.0 (last with macOS x86_64). load-dynamic
+# dlopens our bundled libonnxruntime.1.20.1.dylib at runtime. ort-sys pinned in
+# lockstep — rc.9's macro needs rc.9's Option-wrapped bindings.
+ort = { version = "=2.0.0-rc.9", default-features = false, features = ["load-dynamic"] }
+ort-sys = "=2.0.0-rc.9"
+# espeak-rs: FFI to vendored espeak-ng C, IPA phonemization (validated 7/9 exact
+# vs the WASM the app shipped). Needs a complete espeak-ng-data dir at runtime.
+espeak-rs = "0.2"
+hound = "3"
+regex = "1"
+anyhow = "1"
+office_oxide = "0.1"          # legacy .doc / .docx text extraction
+mp3lame-encoder = "0.2"       # real mp3 for the extension API
+
+# HTTP + WebSocket server (the :51730 contract). Bound to 127.0.0.1 only.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time", "fs"] }
+axum = { version = "0.8", features = ["ws"] }
+tower-http = { version = "0.6", features = ["cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+futures-util = "0.3"
