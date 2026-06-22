@@ -63,15 +63,14 @@ jobs:
       run:
         working-directory: tauri
     env:
-      # macOS Developer ID signing — OPTIONAL (only runs on tag/dispatch when
-      # APPLE_SIGNING_IDENTITY is set; see the "Sign .app" step). We deliberately do
-      # NOT put APPLE_CERTIFICATE here: Tauri auto-signs whenever it sees that var,
-      # which would (and did) fail the unsigned/PR builds on cert import. The cert is
-      # imported inside the gated Sign step instead, so default builds stay ad-hoc.
-      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      # `tauri build` auto-signs whenever it sees APPLE_SIGNING_IDENTITY or
+      # APPLE_CERTIFICATE in the environment — which failed every build (it tried to
+      # codesign with no cert in the keychain). So NO Apple vars live at the job
+      # level: `tauri build` always produces an ad-hoc bundle, and Developer ID
+      # signing happens only in the gated, self-contained "Sign .app" step below.
+      # SIGN_MACOS is just a boolean flag (not a var Tauri recognizes) used to gate
+      # that step; it's true only when an APPLE_SIGNING_IDENTITY secret exists.
+      SIGN_MACOS: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -120,10 +119,11 @@ jobs:
       # macOS-only: deep-sign (nested onnxruntime dylib + hardened runtime), package
       # the LZMA DMG, then notarize. All gated on APPLE_SIGNING_IDENTITY being set.
       - name: Sign .app (macOS, Developer ID)
-        if: ${{ runner.os == 'macOS' && github.event_name != 'pull_request' && env.APPLE_SIGNING_IDENTITY != '' }}
+        if: ${{ runner.os == 'macOS' && github.event_name != 'pull_request' && env.SIGN_MACOS == 'true' }}
         env:
           APPLE_CERTIFICATE: ${{ secrets.CSC_LINK }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           # Import the Developer ID cert into a temporary keychain.
           KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
@@ -144,7 +144,11 @@ jobs:
         run: npm run dmg
 
       - name: Notarize + staple DMG (macOS)
-        if: ${{ runner.os == 'macOS' && github.event_name != 'pull_request' && env.APPLE_SIGNING_IDENTITY != '' && env.APPLE_ID != '' }}
+        if: ${{ runner.os == 'macOS' && github.event_name != 'pull_request' && env.SIGN_MACOS == 'true' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           DMG=$(ls src-tauri/target/release/bundle/dmg/*.dmg | head -1)
           xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
