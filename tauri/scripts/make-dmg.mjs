@@ -40,14 +40,40 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// hdiutil intermittently reports "Resource busy" on CI runners — Spotlight /
-// fseventsd is still settling on the freshly built + code-signed bundle when
-// hdiutil reads the staging folder. Retry with backoff before giving up; -ov
-// makes each attempt overwrite any partial image.
+// Is this process running under Rosetta (x86_64 translated on Apple Silicon)?
+// The macOS x64 release job builds an x86_64 .app under Rosetta — but hdiutil and
+// its diskimages-helper malfunction when invoked from a translated process
+// ("create failed - Resource busy", with helper processes left orphaned), so the
+// DMG must be built natively there. The sysctl key is ABSENT on genuine Intel and
+// returns 0 on native arm64 — both correctly resolve to "not translated".
+function isRosettaTranslated() {
+  if (process.platform !== "darwin") return false;
+  try {
+    // stderr ignored: the key is absent on genuine Intel and sysctl would print
+    // "unknown oid" — expected, not an error worth surfacing.
+    return (
+      execFileSync("sysctl", ["-n", "sysctl.proc_translated"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() === "1"
+    );
+  } catch {
+    return false;
+  }
+}
+
+const ROSETTA = isRosettaTranslated();
+
+// Build the DMG. Under Rosetta we force hdiutil to run natively via `arch -arm64`
+// (the DMG's contents are unaffected by which arch packages them). A retry with
+// backoff still guards the genuine transient "Resource busy" flake seen even on
+// native runners; -ov makes each attempt overwrite any partial image.
 async function hdiutilCreateWithRetry(args, attempts = 4) {
+  const [bin, fullArgs] = ROSETTA ? ["arch", ["-arm64", "hdiutil", ...args]] : ["hdiutil", args];
+  if (ROSETTA) log("Rosetta detected — running hdiutil natively via `arch -arm64`");
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      execFileSync("hdiutil", args, { stdio: "inherit" });
+      execFileSync(bin, fullArgs, { stdio: "inherit" });
       return;
     } catch (err) {
       if (attempt === attempts) throw err;
