@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 # A new push to the same ref cancels the previous run.
 concurrency:
@@ -12,36 +13,40 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  frontend:
-    name: Frontend typecheck + format
+  quality:
+    name: Lint · format · dead-code · typecheck · build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "22"
+          node-version: "24"
+          cache: pnpm
 
-      - name: Install root deps (prettier)
-        run: npm ci
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
-      - name: Format check
-        run: npm run format:check
+      - name: Lint (oxlint)
+        run: pnpm lint
 
-      - name: Install Tauri frontend deps
-        working-directory: tauri
-        run: npm ci
+      - name: Format check (oxfmt)
+        run: pnpm format:check
 
-      - name: Typecheck (vue-tsc)
-        working-directory: tauri
-        run: npm run typecheck
+      - name: Dead-code check (knip)
+        run: pnpm knip
 
-      - name: Build frontend (vite)
-        working-directory: tauri
-        run: npm run build
+      - name: Typecheck + build — desktop frontend
+        run: pnpm --filter out-loud-tauri build
+
+      - name: Typecheck + build — web
+        run: pnpm --filter out-loud-web build
 
   engine:
     name: Engine unit tests
@@ -49,13 +54,13 @@ jobs:
     timeout-minutes: 40
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: "tauri/src-tauri/engine -> target"
 

@@ -42,7 +42,8 @@
     "downloadTooltip": "Download as audio file (generates the whole document)",
     "generateFirst": "Generate audio first",
     "exporting": "Generating full audio… {pct}% — click to cancel",
-    "cancelExport": "Cancel export, {pct}% generated"
+    "cancelExport": "Cancel export, {pct}% generated",
+    "format": "Download format"
   },
   "volume": {
     "label": "Vol"

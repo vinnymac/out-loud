@@ -12,6 +12,7 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "@breezystack/lamejs": "^1.2.7",
     "jszip": "^3.10.1",
     "onnxruntime-web": "1.23.2",
     "pdfjs-dist": "^6.0.227",

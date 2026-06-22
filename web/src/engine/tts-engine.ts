@@ -78,7 +78,7 @@ const VOCAB: Record<string, number> = {
   ʦ: 20,
   ʨ: 21,
   ᵝ: 22,
-  "ꭧ": 23,
+  ꭧ: 23,
   A: 24,
   I: 25,
   O: 31,
@@ -618,11 +618,6 @@ function createWavBuffer(waveform: Float32Array, sampleRate: number): ArrayBuffe
 }
 
 // ---- Public API ----
-
-/** True if the model + voice are already loaded in memory for this engine. */
-export function isWarm(modelId = DEFAULT_MODEL, voiceId = DEFAULT_VOICE): boolean {
-  return cache.session !== null && cache.modelId === modelId && cache.voices.has(voiceId);
-}
 
 /**
  * Pre-fetch and initialize everything needed to synthesize (ORT runtime, model,

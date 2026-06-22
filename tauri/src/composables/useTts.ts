@@ -9,6 +9,9 @@ import {
   cancelGeneration,
   waitConnected,
 } from "~/lib/tts-client";
+import { Mp3Encoder } from "@breezystack/lamejs";
+
+export type DownloadFormat = "wav" | "mp3";
 
 // How many chunks ahead of the playhead the engine may generate during normal
 // playback (backpressure). Download/export lifts this cap to generate fully.
@@ -67,6 +70,7 @@ export function useTts(getVolume: () => number) {
   let currentReqId: string | null = null;
   let lastSentTarget = -1;
   let pendingExport = false;
+  let exportFormat: DownloadFormat = "wav";
   let firstResponseTimer: ReturnType<typeof setTimeout> | null = null;
 
   function clearFirstResponseTimer() {
@@ -409,7 +413,7 @@ export function useTts(getVolume: () => number) {
             if (pendingExport) {
               pendingExport = false;
               player.isExporting = false;
-              exportWav();
+              exportAudio();
             }
           },
           onError: (error) => {
@@ -427,8 +431,8 @@ export function useTts(getVolume: () => number) {
     }
   }
 
-  // Build a WAV from all generated chunks and trigger a browser download.
-  function exportWav() {
+  // Build an audio file (WAV or MP3) from all generated chunks and download it.
+  function exportAudio() {
     if (cachedAudioBuffers.length === 0) return;
 
     const buffers = cachedAudioBuffers;
@@ -446,14 +450,20 @@ export function useTts(getVolume: () => number) {
       offset += buffer.length;
     }
 
+    const format = exportFormat;
     offlineCtx.startRendering().then((renderedBuffer) => {
-      const wavData = audioBufferToWav(renderedBuffer);
-      const blob = new Blob([wavData], { type: "audio/wav" });
+      const { blob, ext } =
+        format === "mp3"
+          ? { blob: new Blob([encodeMp3(renderedBuffer)], { type: "audio/mpeg" }), ext: "mp3" }
+          : {
+              blob: new Blob([audioBufferToWav(renderedBuffer)], { type: "audio/wav" }),
+              ext: "wav",
+            };
       const url = URL.createObjectURL(blob);
 
       const now = new Date();
       const timestamp = now.toISOString().replace(/[:.T]/g, "-").slice(0, 19);
-      const filename = `out-loud-${timestamp}.wav`;
+      const filename = `out-loud-${timestamp}.${ext}`;
 
       const a = document.createElement("a");
       a.href = url;
@@ -463,13 +473,14 @@ export function useTts(getVolume: () => number) {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      track("audio_downloaded", { duration_seconds: renderedBuffer.duration });
+      track("audio_downloaded", { duration_seconds: renderedBuffer.duration, format });
     });
   }
 
-  function download() {
+  function download(format: DownloadFormat = "wav") {
+    exportFormat = format;
     if (allChunksReceived) {
-      exportWav();
+      exportAudio();
       return;
     }
     if (!currentReqId) return;
@@ -498,6 +509,51 @@ export function useTts(getVolume: () => number) {
   });
 
   return Object.assign(player, { play, stop, setVolume, download, cancelExport });
+}
+
+// Encode an AudioBuffer to MP3 via lamejs — the client-side equivalent of the
+// engine's mp3lame `response_format: mp3`. 24 kHz mono speech compresses ~10×
+// vs WAV. Returns the full MP3 bytes (one ArrayBuffer-backed Uint8Array).
+function encodeMp3(buffer: AudioBuffer): Uint8Array<ArrayBuffer> {
+  const channels = Math.min(buffer.numberOfChannels, 2);
+  const encoder = new Mp3Encoder(channels, buffer.sampleRate, 128);
+  const left = floatTo16BitPCM(buffer.getChannelData(0));
+  const right = channels > 1 ? floatTo16BitPCM(buffer.getChannelData(1)) : undefined;
+
+  const blockSize = 1152; // one MPEG frame's worth of samples
+  const frames: Uint8Array[] = [];
+  let total = 0;
+  for (let i = 0; i < left.length; i += blockSize) {
+    const l = left.subarray(i, i + blockSize);
+    const r = right ? right.subarray(i, i + blockSize) : undefined;
+    const encoded = encoder.encodeBuffer(l, r);
+    if (encoded.length > 0) {
+      frames.push(encoded);
+      total += encoded.length;
+    }
+  }
+  const end = encoder.flush();
+  if (end.length > 0) {
+    frames.push(end);
+    total += end.length;
+  }
+
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const frame of frames) {
+    out.set(frame, offset);
+    offset += frame.length;
+  }
+  return out;
+}
+
+function floatTo16BitPCM(input: Float32Array): Int16Array {
+  const out = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i++) {
+    const s = Math.max(-1, Math.min(1, input[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return out;
 }
 
 // Convert an AudioBuffer to a 16-bit PCM WAV (matches the original export).

@@ -27,28 +27,40 @@
   ],
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.15.0",
   "engines": {
     "node": ">=22",
-    "npm": ">=10"
+    "pnpm": ">=10"
   },
   "scripts": {
-    "install:app": "cd tauri && npm install",
-    "dev": "cd tauri && npm run tauri:dev",
-    "build": "cd tauri && npm run tauri:build",
-    "format": "prettier . --write",
-    "format:check": "prettier . --check",
+    "dev": "pnpm --filter out-loud-tauri tauri:dev",
+    "build": "pnpm --filter out-loud-tauri tauri:build",
+    "build:web": "pnpm --filter out-loud-web build",
+    "lint": "oxlint",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "knip": "knip",
     "release": "node scripts/release.mjs",
     "extension:chrome:pack": "mkdir -p releases/extensions && cd chrome-extension && zip -r ../releases/extensions/out-loud-chrome.zip . -x '*.DS_Store'",
     "prepare": "husky"
   },
   "devDependencies": {
     "husky": "9.1.7",
+    "knip": "5.64.1",
     "lint-staged": "15.5.2",
-    "prettier": "3.5.0"
+    "oxfmt": "0.56.0",
+    "oxlint": "1.71.0"
   },
   "lint-staged": {
-    "*.{json,md,yml,yaml,css,html,ts,tsx,js,mjs,cjs,vue}": [
-      "prettier --write"
+    "*.{js,mjs,cjs,ts,tsx,vue,json,jsonc}": "oxfmt"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "fsevents",
+      "onnxruntime-node",
+      "protobufjs",
+      "vue-demi"
     ]
   }
 }

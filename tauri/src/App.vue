@@ -11,7 +11,7 @@ import UpdateBanner from "~/components/UpdateBanner.vue";
 import AboutDialog from "~/components/AboutDialog.vue";
 import RecentsSidebar from "~/components/RecentsSidebar.vue";
 import { useSettings } from "~/composables/useSettings";
-import { useTts } from "~/composables/useTts";
+import { useTts, type DownloadFormat } from "~/composables/useTts";
 import { useLibrary } from "~/composables/useLibrary";
 import { useUpdateCheck } from "~/composables/useUpdateCheck";
 import { playClick } from "~/lib/sound";
@@ -29,6 +29,15 @@ const lib = useLibrary();
 
 const getVolume = () => settings.value.volume;
 const player = useTts(getVolume);
+
+// Remembered download format (WAV / MP3), persisted across launches.
+const DOWNLOAD_FORMAT_KEY = "out-loud-download-format";
+function loadDownloadFormat(): DownloadFormat {
+  const v = localStorage.getItem(DOWNLOAD_FORMAT_KEY);
+  return v === "wav" || v === "mp3" ? v : "mp3";
+}
+const downloadFormat = ref<DownloadFormat>(loadDownloadFormat());
+watch(downloadFormat, (v) => localStorage.setItem(DOWNLOAD_FORMAT_KEY, v));
 
 const aboutOpen = ref(false);
 const sidebarOpen = ref(false);
@@ -235,8 +244,10 @@ const srStatus = computed(() => {
                 :can-download="player.canDownload"
                 :is-exporting="player.isExporting"
                 :export-progress="player.chunkProgress"
+                :format="downloadFormat"
                 @play-pause="handlePlayPause"
-                @download="player.download"
+                @update:format="downloadFormat = $event"
+                @download="player.download(downloadFormat)"
                 @cancel-export="player.cancelExport"
               />
             </div>

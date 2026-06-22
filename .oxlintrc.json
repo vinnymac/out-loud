@@ -1,0 +1,24 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "oxc"],
+  "categories": {
+    "correctness": "error"
+  },
+  "rules": {
+    "no-unused-vars": "warn",
+    "no-unused-expressions": ["error", { "allowShortCircuit": true, "allowTernary": true }]
+  },
+  "env": {
+    "builtin": true
+  },
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/node_modules/**",
+    "chrome-extension/lib/**",
+    "tauri/src/reader/vendor/**",
+    "tauri/src-tauri/**",
+    "models/**",
+    "espeak-ng-data/**",
+    "**/*.min.js"
+  ]
+}
