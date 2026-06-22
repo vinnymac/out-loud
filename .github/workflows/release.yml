@@ -63,10 +63,11 @@ jobs:
       run:
         working-directory: tauri
     env:
-      # macOS Developer ID signing — OPTIONAL (skipped unless APPLE_SIGNING_IDENTITY
-      # is set). Mapped from the repo's existing secrets to the names codesign expects.
-      APPLE_CERTIFICATE: ${{ secrets.CSC_LINK }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+      # macOS Developer ID signing — OPTIONAL (only runs on tag/dispatch when
+      # APPLE_SIGNING_IDENTITY is set; see the "Sign .app" step). We deliberately do
+      # NOT put APPLE_CERTIFICATE here: Tauri auto-signs whenever it sees that var,
+      # which would (and did) fail the unsigned/PR builds on cert import. The cert is
+      # imported inside the gated Sign step instead, so default builds stay ad-hoc.
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -120,9 +121,22 @@ jobs:
       # the LZMA DMG, then notarize. All gated on APPLE_SIGNING_IDENTITY being set.
       - name: Sign .app (macOS, Developer ID)
         if: ${{ runner.os == 'macOS' && github.event_name != 'pull_request' && env.APPLE_SIGNING_IDENTITY != '' }}
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.CSC_LINK }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
         run: |
+          # Import the Developer ID cert into a temporary keychain.
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p "" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
+          # Deep-sign (nested onnxruntime dylib) with hardened runtime.
           APP="src-tauri/target/release/bundle/macos/Out Loud.app"
-          codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$APP"
+          codesign --force --deep --options runtime --timestamp --keychain "$KEYCHAIN" --sign "$APPLE_SIGNING_IDENTITY" "$APP"
           codesign --verify --deep --strict --verbose=2 "$APP"
 
       - name: Package DMG (macOS, LZMA/ULMO)
