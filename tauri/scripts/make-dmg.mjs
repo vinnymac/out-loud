@@ -36,6 +36,28 @@ async function exists(p) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// hdiutil intermittently reports "Resource busy" on CI runners — Spotlight /
+// fseventsd is still settling on the freshly built + code-signed bundle when
+// hdiutil reads the staging folder. Retry with backoff before giving up; -ov
+// makes each attempt overwrite any partial image.
+async function hdiutilCreateWithRetry(args, attempts = 4) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      execFileSync("hdiutil", args, { stdio: "inherit" });
+      return;
+    } catch (err) {
+      if (attempt === attempts) throw err;
+      const waitMs = 2000 * attempt;
+      log(`hdiutil failed (attempt ${attempt}/${attempts}); retrying in ${waitMs / 1000}s…`);
+      await sleep(waitMs);
+    }
+  }
+}
+
 // Tag by the running Node's arch: "x64" under the Rosetta x86_64 Node, "aarch64"
 // on Apple Silicon. Matches the artifact globs in release.yml.
 function archTag() {
@@ -68,11 +90,17 @@ async function main() {
     execFileSync("ditto", [app, join(stage, APP_NAME)], { stdio: "inherit" });
     await symlink("/Applications", join(stage, "Applications"));
     log(`creating ${FORMAT} DMG…`);
-    execFileSync(
-      "hdiutil",
-      ["create", "-volname", VOLNAME, "-srcfolder", stage, "-ov", "-format", FORMAT, out],
-      { stdio: "inherit" }
-    );
+    await hdiutilCreateWithRetry([
+      "create",
+      "-volname",
+      VOLNAME,
+      "-srcfolder",
+      stage,
+      "-ov",
+      "-format",
+      FORMAT,
+      out,
+    ]);
   } finally {
     await rm(stage, { recursive: true, force: true });
   }
