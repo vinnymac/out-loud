@@ -127,9 +127,13 @@ jobs:
         if: ${{ matrix.rosetta == '1' }}
         run: |
           softwareupdate --install-rosetta --agree-to-license || true
-          rustup toolchain install stable-x86_64-apple-darwin
-          rustup default stable-x86_64-apple-darwin
-          rustc -vV
+          # rustup refuses a non-host toolchain without --force-non-host. We then
+          # pin it via RUSTUP_TOOLCHAIN (not `rustup default`, which also balks at a
+          # non-host default) so EVERY cargo/rustc — including the one tauri-cli
+          # spawns — runs as x86_64 under Rosetta => a native x86_64 build.
+          rustup toolchain install --force-non-host --profile minimal stable-x86_64-apple-darwin
+          echo "RUSTUP_TOOLCHAIN=stable-x86_64-apple-darwin" >> "$GITHUB_ENV"
+          RUSTUP_TOOLCHAIN=stable-x86_64-apple-darwin rustc -vV
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
