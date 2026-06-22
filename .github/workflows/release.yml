@@ -195,7 +195,8 @@ jobs:
       - name: Verify .app architecture (macOS)
         if: runner.os == 'macOS'
         run: |
-          BIN="$MAC_APP/Contents/MacOS/Out Loud"
+          EXE=$(plutil -extract CFBundleExecutable raw "$MAC_APP/Contents/Info.plist")
+          BIN="$MAC_APP/Contents/MacOS/$EXE"
           DYLIB=$(ls "$MAC_APP/Contents/Resources/onnxruntime/"*.dylib | head -1)
           case "${{ matrix.arch }}" in
             x64) want="x86_64" ;;
