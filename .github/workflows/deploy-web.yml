@@ -67,14 +67,15 @@ jobs:
           fi
 
           CF="https://api.cloudflare.com/client/v4"
-          AUTH="-H \"Authorization: Bearer ${CLOUDFLARE_API_TOKEN}\""
+          # jq parses JSON properly regardless of whitespace formatting.
+          cf_success() { echo "$1" | jq -e '.success == true' > /dev/null 2>&1; }
 
           # Check whether the Pages project already exists.
           EXISTS=$(curl -s \
             -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
             "${CF}/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/out-loud")
 
-          if echo "$EXISTS" | grep -q '"success":true'; then
+          if cf_success "$EXISTS"; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
             echo "✅ Pages project 'out-loud' found"
             exit 0
@@ -89,7 +90,7 @@ jobs:
             "${CF}/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects")
           echo "Cloudflare response: ${CREATE}"
 
-          if echo "$CREATE" | grep -q '"success":true'; then
+          if cf_success "$CREATE"; then
             echo "deploy=true" >> "$GITHUB_OUTPUT"
             echo "✅ Pages project 'out-loud' created"
           else
