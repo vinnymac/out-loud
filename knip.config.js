@@ -43,7 +43,7 @@ export default {
     // shared Tauri modules by the Vite seam plugin and consumed from tauri/src —
     // all are entry points, not dead code.
     web: {
-      entry: ["index.html", "src/tts.worker.ts", "src/ipc.ts", "src/tts-client.ts"],
+      entry: ["src/main.ts", "src/tts.worker.ts", "src/ipc.ts", "src/tts-client.ts"],
       project: ["src/**/*.{ts,vue}", "e2e/**/*.ts"],
       // jszip/pdfjs power the shared reader and lamejs the shared MP3 export
       // (all in tauri/src, reused by the web build); UnoCSS deps come via
