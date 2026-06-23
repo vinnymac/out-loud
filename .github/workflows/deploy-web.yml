@@ -55,9 +55,10 @@ jobs:
         run: pnpm --filter out-loud-web build
 
       - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # `main` -> production (loud.vinnymac.dev); other refs -> a preview URL.
-          command: pages deploy web/dist --project-name=out-loud --branch=${{ github.ref_name }}
+        # wrangler-action@v4 runs `pnpm add wrangler@4` at the workspace root,
+        # which pnpm rejects without -w. Use pnpm dlx to run wrangler without
+        # touching the workspace.
+        run: pnpm dlx wrangler@4 pages deploy web/dist --project-name=out-loud --branch=${{ github.ref_name }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
