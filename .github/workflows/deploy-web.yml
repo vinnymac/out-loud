@@ -10,14 +10,16 @@ name: Deploy web (Cloudflare Pages)
 # so dispatching on vt/web-loud is a safe smoke test before the app reaches main.
 #
 # ── One-time Cloudflare setup (your account; not done in code) ────────────────
-#   The Pages project is created automatically by the workflow on first run.
-#   You still need to do these steps manually:
-#   1. My Profile → API Tokens → create a token with "Cloudflare Pages: Edit".
-#      Note your Account ID (Workers & Pages overview, right sidebar).
+#   1. My Profile → API Tokens → create a token with "Cloudflare Pages: Edit"
+#      at the Account level. Note your Account ID (Workers & Pages, right sidebar).
 #   2. Repo → Settings → Secrets and variables → Actions → add:
 #        CLOUDFLARE_API_TOKEN   = <the token>
 #        CLOUDFLARE_ACCOUNT_ID  = <your account id>
-#   3. Pages project → Custom domains → add `loud.vinnymac.dev`. If vinnymac.dev
+#   3. The workflow will create the Pages project automatically on first deploy.
+#      If creation fails (account-level Pages not yet activated), visit:
+#        dash.cloudflare.com → Workers & Pages → Create → Pages → Direct Upload
+#      Name the project "out-loud", set production branch to "main", then re-run.
+#   4. Pages project → Custom domains → add `loud.vinnymac.dev`. If vinnymac.dev
 #      is on Cloudflare DNS this creates the CNAME automatically; otherwise add a
 #      CNAME from loud → out-loud.pages.dev at your DNS provider.
 
@@ -54,16 +56,56 @@ jobs:
       - name: Build web (static, in-browser TTS)
         run: pnpm --filter out-loud-web build
 
-      - name: Create Cloudflare Pages project (no-op if already exists)
-        run: pnpm dlx wrangler@4 pages project create out-loud --production-branch=main || true
+      - name: Ensure Cloudflare Pages project exists
+        id: setup-pages
+        run: |
+          # Bail out gracefully if secrets aren't configured yet.
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID}" ]; then
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️  CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID not set — skipping deploy"
+            exit 0
+          fi
+
+          CF="https://api.cloudflare.com/client/v4"
+          AUTH="-H \"Authorization: Bearer ${CLOUDFLARE_API_TOKEN}\""
+
+          # Check whether the Pages project already exists.
+          EXISTS=$(curl -s \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            "${CF}/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects/out-loud")
+
+          if echo "$EXISTS" | grep -q '"success":true'; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Pages project 'out-loud' found"
+            exit 0
+          fi
+
+          # Project not found — try to create it via the REST API.
+          echo "Project not found; attempting to create via Cloudflare API..."
+          CREATE=$(curl -s -X POST \
+            -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d '{"name":"out-loud","production_branch":"main"}' \
+            "${CF}/accounts/${CLOUDFLARE_ACCOUNT_ID}/pages/projects")
+          echo "Cloudflare response: ${CREATE}"
+
+          if echo "$CREATE" | grep -q '"success":true'; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Pages project 'out-loud' created"
+          else
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️  Could not create Pages project 'out-loud' via API."
+            echo "   One-time manual step: dash.cloudflare.com → Workers & Pages"
+            echo "   → Create → Pages → Direct Upload → name: out-loud, branch: main"
+          fi
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy to Cloudflare Pages
-        # wrangler-action@v4 runs `pnpm add wrangler@4` at the workspace root,
-        # which pnpm rejects without -w. Use pnpm dlx to run wrangler without
-        # touching the workspace.
+        if: steps.setup-pages.outputs.deploy == 'true'
+        # pnpm dlx avoids touching the workspace (wrangler-action@v4 runs
+        # `pnpm add wrangler@4` at root, which pnpm rejects without -w).
         run: pnpm dlx wrangler@4 pages deploy web/dist --project-name=out-loud --branch=${{ github.ref_name }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
