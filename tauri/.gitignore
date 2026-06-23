@@ -1,0 +1,17 @@
+# dependencies
+node_modules/
+
+# frontend build output
+dist/
+
+# Tauri / Rust build output (app crate + the nested engine crate)
+src-tauri/target/
+src-tauri/engine/target/
+src-tauri/gen/
+
+# staged runtime resources (ONNX dylib + espeak-ng-data + models + openapi)
+src-tauri/resources/
+
+# misc
+.DS_Store
+*.log

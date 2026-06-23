@@ -1,130 +1,309 @@
 name: Release
 
+# Builds the native-Rust Tauri app for macOS (Intel x64 + Apple Silicon arm64),
+# Windows, and Linux, packs the Chrome extension, and publishes a DRAFT Release.
+#
+#   pull_request -> full matrix build (validates parity; no release)
+#   tag v* / dispatch -> matrix build + (optional macOS sign/notarize) + draft release
+#
+# macOS note: we do NOT build a universal binary. `tauri build --target
+# universal-apple-darwin` compiles each arch with an explicit target triple, which
+# makes cmake-rs set -DCMAKE_OSX_ARCHITECTURES and breaks espeak-rs-sys's espeak-ng
+# `data` compile DETERMINISTICALLY (see memory: espeak-universal-build-blocker).
+# Instead both macOS slices are NATIVE builds on the fast macos-14 runner: arm64
+# natively, and x64 under Rosetta 2 with an x86_64 toolchain (node/rust/cmake) so it
+# is a native x86_64 build (working espeak path) — never `--target`. This avoids the
+# slow/scarce/deprecated macos-13 Intel runner while keeping Intel support.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to build (e.g. v1.0.1). Create it first with `git tag`."
+        description: "Existing tag to build/release (e.g. v2.1.0). Create it first with `git tag`."
         required: true
+  pull_request:
+    branches: [main]
+    paths:
+      - "tauri/**"
+      - "models/**"
+      - "espeak-ng-data/**"
+      - ".github/workflows/release.yml"
+
+# A new push to the same ref cancels the previous run (frees the scarce runners).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write # to attach assets to the GitHub Release
 
 jobs:
-  desktop:
-    name: Build ${{ matrix.os }}
+  build:
+    name: Build ${{ matrix.label }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            script: electron:build:mac
-            output_dir: releases/macos
-          - os: windows-latest
-            script: electron:build:win
-            output_dir: releases/windows
-          - os: ubuntu-latest
-            script: electron:build:linux
-            output_dir: releases/linux
+          # macOS arm64 — native on Apple Silicon.
+          - {
+              label: "macOS (arm64)",
+              os: macos-14,
+              arch: arm64,
+              node_arch: arm64,
+              bundles: "app",
+              rosetta: "",
+              glob: "src-tauri/target/release/bundle/dmg/*aarch64.dmg",
+            }
+          # macOS x64 — native x86_64 under Rosetta on the same fast runner (no
+          # macos-13). x86_64 node + rust + universal2 cmake => native x64 build.
+          - {
+              label: "macOS (x64)",
+              os: macos-14,
+              arch: x64,
+              node_arch: x64,
+              bundles: "app",
+              rosetta: "1",
+              glob: "src-tauri/target/release/bundle/dmg/*x64.dmg",
+            }
+          - {
+              label: "Windows (x64)",
+              os: windows-latest,
+              arch: x64,
+              node_arch: x64,
+              bundles: "nsis",
+              rosetta: "",
+              glob: "src-tauri/target/release/bundle/nsis/*-setup.exe",
+            }
+          - {
+              label: "Linux (x64)",
+              os: ubuntu-22.04,
+              arch: x64,
+              node_arch: x64,
+              bundles: "deb",
+              rosetta: "",
+              glob: "src-tauri/target/release/bundle/deb/*.deb",
+            }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 90
+    defaults:
+      run:
+        working-directory: tauri
+    env:
+      # `tauri build` auto-signs whenever it sees APPLE_SIGNING_IDENTITY or
+      # APPLE_CERTIFICATE in the environment — and fails if the cert isn't in the
+      # keychain. So NO Apple vars live at the job level. NOTE: without those vars
+      # `tauri build` leaves the bundle UNSIGNED (it does NOT ad-hoc sign), which
+      # makes arm64 unlaunchable and a quarantined download show "damaged". So we
+      # always sign afterward: Developer ID + notarization when the identity
+      # secret exists, otherwise an explicit ad-hoc signature (valid, but
+      # un-notarized). SIGN_MACOS is a plain boolean flag (not a var Tauri
+      # recognizes), true only when an identity secret exists.
+      SIGN_MACOS: ${{ secrets.APPLE_SIGNING_IDENTITY != '' }}
+      MAC_APP: src-tauri/target/release/bundle/macos/Out Loud.app
+      MAC_DMG_DIR: src-tauri/target/release/bundle/dmg
+      # Pin to Tauri's default minimum so the serial espeak pre-build below and the
+      # parallel `tauri build` share a build fingerprint. If they differed, cargo
+      # would re-run espeak-rs-sys's build script under the parallel build and could
+      # re-trigger the espeak-ng data-target race the pre-build exists to avoid.
+      MACOSX_DEPLOYMENT_TARGET: "10.13"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
 
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "22"
-          cache: "npm"
+          node-version: "24"
+          architecture: ${{ matrix.node_arch }}
 
-      - name: Install root dependencies
-        run: npm ci
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
-      - name: Install electron-ui dependencies
-        run: npm --prefix electron-ui ci
+      # macOS x64 only: native x86_64 build under Rosetta. Install Rosetta + the
+      # x86_64 Rust toolchain and make it the default, so `cargo` runs as x86_64
+      # (under Rosetta) and produces a native x86_64 build (host == target, no
+      # CMAKE_OSX_ARCHITECTURES => the espeak-ng path that actually works).
+      - name: Set up x86_64 toolchain under Rosetta (macOS x64)
+        if: ${{ matrix.rosetta == '1' }}
+        run: |
+          softwareupdate --install-rosetta --agree-to-license || true
+          # rustup refuses a non-host toolchain without --force-non-host. We then
+          # pin it via RUSTUP_TOOLCHAIN (not `rustup default`, which also balks at a
+          # non-host default) so EVERY cargo/rustc — including the one tauri-cli
+          # spawns — runs as x86_64 under Rosetta => a native x86_64 build.
+          rustup toolchain install --force-non-host --profile minimal stable-x86_64-apple-darwin
+          echo "RUSTUP_TOOLCHAIN=stable-x86_64-apple-darwin" >> "$GITHUB_ENV"
+          RUSTUP_TOOLCHAIN=stable-x86_64-apple-darwin rustc -vV
 
-      - name: Build
-        run: npm run ${{ matrix.script }}
+      - name: Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: "tauri/src-tauri -> target"
+
+      # espeak-ng-data is vendored, so no system espeak install anywhere. We only
+      # need cmake (+ a C compiler) for the vendored espeak-ng C in espeak-rs-sys,
+      # and the Tauri/WebKit system libs on Linux.
+      - name: Linux system deps
+        if: runner.os == 'Linux'
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev patchelf build-essential cmake libssl-dev
+
+      - name: macOS deps (cmake, arm64)
+        if: ${{ runner.os == 'macOS' && matrix.rosetta != '1' }}
+        working-directory: .
+        run: brew install cmake || true
+
+      # Homebrew cmake is arm64-only, which would compile espeak as arm64 under the
+      # x86_64 toolchain. The pip `cmake` wheel is universal2, so under the x86_64
+      # cargo it runs as x86_64 (Rosetta) and emits x86_64 objects. Prepend it.
+      - name: macOS deps (universal2 cmake via pip, x64)
+        if: ${{ matrix.rosetta == '1' }}
+        working-directory: .
+        run: |
+          python3 -m pip install --upgrade --break-system-packages cmake
+          CMBIN=$(python3 -c "import cmake; print(cmake.CMAKE_BIN_DIR)")
+          echo "$CMBIN" >> "$GITHUB_PATH"
+          echo "universal2 cmake at: $CMBIN"
+          file "$CMBIN/cmake"
+
+      - name: Install JS deps (frontend + build-time onnxruntime-node binary)
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+
+      - name: Stage resources (onnxruntime + espeak-ng-data + models + openapi)
+        run: pnpm stage
+
+      # espeak-rs-sys vendors espeak-ng and compiles its phoneme `data` target via
+      # CMake. That target copies phsource into the build dir and compiles it as two
+      # under-synchronized custom commands, so under parallel make it can read a
+      # half-copied spectral file -> "Failed to open ..." -> phondata Error 1.
+      # Building ONLY this crate with CARGO_BUILD_JOBS=1 forces a serial (race-free)
+      # cmake build; the heavy parallel `tauri build` below reuses the cached result.
+      - name: Pre-build espeak-rs-sys serially (avoid espeak-ng data-target race)
+        if: runner.os == 'macOS'
+        working-directory: tauri/src-tauri
+        run: CARGO_BUILD_JOBS=1 cargo build --release -p espeak-rs-sys
+
+      - name: Build app bundle
+        run: pnpm exec tauri build --bundles ${{ matrix.bundles }}
+
+      # Crash loudly if the Rosetta/native plumbing silently produced the wrong arch
+      # (e.g. an arm64 binary in the "x64" job) instead of shipping a broken DMG.
+      - name: Verify .app architecture (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          EXE=$(plutil -extract CFBundleExecutable raw "$MAC_APP/Contents/Info.plist")
+          BIN="$MAC_APP/Contents/MacOS/$EXE"
+          DYLIB=$(ls "$MAC_APP/Contents/Resources/onnxruntime/"*.dylib | head -1)
+          case "${{ matrix.arch }}" in
+            x64) want="x86_64" ;;
+            arm64) want="arm64" ;;
+          esac
+          for f in "$BIN" "$DYLIB"; do
+            got=$(lipo -archs "$f")
+            echo "$f -> $got (want $want)"
+            if [ "$got" != "$want" ]; then
+              echo "::error::architecture mismatch in $f: got '$got', want '$want'"
+              exit 1
+            fi
+          done
+
+      # macOS-only: deep-sign (nested onnxruntime dylib + hardened runtime). Gated on
+      # an APPLE_SIGNING_IDENTITY secret; ad-hoc otherwise.
+      - name: Sign .app (macOS, Developer ID)
+        if: ${{ runner.os == 'macOS' && github.event_name != 'pull_request' && env.SIGN_MACOS == 'true' }}
         env:
-          # macOS Developer ID signing + Apple notarization.
-          # All values come from repository secrets — see docs/build/releasing.md
-          # for how to set them up. On Linux/Windows runners these are simply
-          # unused by electron-builder.
-          CSC_LINK: ${{ secrets.CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Windows Authenticode signing (optional — leave secrets unset to
-          # ship an unsigned EXE that triggers SmartScreen on first run).
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-          # Intentionally NOT setting GH_TOKEN here — electron-builder would
-          # auto-trigger implicit GitHub publishing on tag push, conflicting
-          # with the softprops/action-gh-release step in the release job.
+          APPLE_CERTIFICATE: ${{ secrets.CSC_LINK }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          security create-keychain -p "" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "" "$KEYCHAIN"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" "$KEYCHAIN"
+          codesign --force --deep --options runtime --timestamp --keychain "$KEYCHAIN" --sign "$APPLE_SIGNING_IDENTITY" "$MAC_APP"
+          codesign --verify --deep --strict --verbose=2 "$MAC_APP"
 
-      - name: Upload desktop artifacts
-        uses: actions/upload-artifact@v4
+      # No Developer ID? Ad-hoc sign so the bundle has a VALID signature: arm64
+      # can launch and a quarantined download shows the bypassable "unidentified
+      # developer" prompt instead of "damaged". Runs whenever the Developer ID
+      # step above does not.
+      - name: Ad-hoc sign .app (macOS, no Developer ID)
+        if: ${{ runner.os == 'macOS' && !(env.SIGN_MACOS == 'true' && github.event_name != 'pull_request') }}
+        run: npm run sign
+
+      - name: Package DMG (macOS, LZMA/ULMO)
+        if: runner.os == 'macOS'
+        run: pnpm dmg
+
+      - name: Notarize + staple DMG (macOS)
+        if: ${{ runner.os == 'macOS' && github.event_name != 'pull_request' && env.SIGN_MACOS == 'true' }}
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          DMG=$(ls "$MAC_DMG_DIR"/*.dmg | head -1)
+          xcrun notarytool submit "$DMG" --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID" --wait
+          xcrun stapler staple "$DMG"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: desktop-${{ matrix.os }}
-          path: |
-            ${{ matrix.output_dir }}/*.dmg
-            ${{ matrix.output_dir }}/*.zip
-            ${{ matrix.output_dir }}/*.exe
-            ${{ matrix.output_dir }}/*.AppImage
-            ${{ matrix.output_dir }}/*.deb
-            ${{ matrix.output_dir }}/*.blockmap
-          if-no-files-found: warn
+          name: out-loud-${{ matrix.os }}-${{ matrix.arch }}
+          path: tauri/${{ matrix.glob }}
+          if-no-files-found: error
 
   extensions:
-    name: Pack extensions
+    name: Pack Chrome extension
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event.inputs.tag || github.ref }}
-
-      - name: Pack Chrome extension
+      - name: Pack
         run: |
           mkdir -p releases/extensions
           cd chrome-extension
-          zip -r ../releases/extensions/out-loud-chrome.zip . \
-            -x '*.DS_Store' \
-            -x 'package-lock.json' \
-            -x 'node_modules/*'
-
-      - name: Upload extension artifact
-        uses: actions/upload-artifact@v4
+          zip -r ../releases/extensions/out-loud-chrome.zip . -x '*.DS_Store' -x 'node_modules/*'
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: chrome-extension
           path: releases/extensions/out-loud-chrome.zip
 
   release:
-    name: Create GitHub Release
-    needs: [desktop, extensions]
+    name: Create GitHub Release (draft)
+    needs: [build, extensions]
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - name: Download artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: artifacts
-
-      - name: Flatten artifacts into a single folder
+      - name: Flatten into release-assets/
         run: |
           mkdir -p release-assets
-          find artifacts -mindepth 2 -type f -print0 | xargs -0 -I{} cp {} release-assets/
+          find artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.deb' -o -name '*.zip' \) -exec cp {} release-assets/ \;
           ls -la release-assets
-
       - name: Publish GitHub Release (draft)
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: ${{ github.event.inputs.tag || github.ref_name }}

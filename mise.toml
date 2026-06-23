@@ -1,0 +1,5 @@
+# Toolchain versions, managed by mise (https://mise.jdx.dev).
+# Local: run `mise install`. CI: jdx/mise-action reads this file.
+[tools]
+node = "24"
+rust = "stable"

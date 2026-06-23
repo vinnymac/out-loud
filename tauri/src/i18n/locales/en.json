@@ -1,0 +1,95 @@
+{
+  "app": {
+    "title": "Out Loud",
+    "buyMeACoffee": "Buy me a coffee",
+    "quit": "Quit",
+    "helpAndAbout": "Help & About"
+  },
+  "sidebar": {
+    "show": "Show recents",
+    "hide": "Hide recents",
+    "tooltip": "Recent files & sessions",
+    "empty": "Nothing yet. Open or drop a file, or play some text — it'll show up here.",
+    "openFile": "+ Open file",
+    "openFileTooltip": "Open a file (TXT, EPUB, PDF)",
+    "remove": "Remove",
+    "removeTooltip": "Remove from list",
+    "textBadge": "text"
+  },
+  "editor": {
+    "label": "Text to speak",
+    "placeholder": "Type, Enter to speak (Shift+Enter for a new line)…",
+    "loadExample": "Load example"
+  },
+  "voice": {
+    "language": "Language",
+    "voice": "Voice",
+    "languages": {
+      "enUs": "English (US)",
+      "enGb": "English (UK)",
+      "es": "Spanish",
+      "ptBr": "Portuguese (BR)",
+      "it": "Italian",
+      "hi": "Hindi",
+      "ja": "Japanese",
+      "cmn": "Chinese"
+    }
+  },
+  "controls": {
+    "play": "Play",
+    "pause": "Pause",
+    "downloadAudio": "Download audio",
+    "downloadTooltip": "Download as audio file (generates the whole document)",
+    "generateFirst": "Generate audio first",
+    "exporting": "Generating full audio… {pct}% — click to cancel",
+    "cancelExport": "Cancel export, {pct}% generated",
+    "format": "Download format"
+  },
+  "volume": {
+    "label": "Vol"
+  },
+  "settings": {
+    "highlight": "Highlight & auto-scroll current text"
+  },
+  "status": {
+    "starting": "Starting...",
+    "cached": "Cached",
+    "stopped": "Stopped",
+    "done": "Done ({time})",
+    "generatingSpeech": "Generating speech",
+    "speaking": "Speaking",
+    "buffering": "Buffering...",
+    "errorGenerating": "Error generating speech"
+  },
+  "errors": {
+    "ttsError": "TTS error",
+    "couldntOpenFile": "Couldn't open file",
+    "noAudio": "No audio chunks received. The TTS engine finished without producing audio.",
+    "engineUnreachable": "Couldn't reach the TTS engine. Make sure Node.js is installed and on your PATH."
+  },
+  "drop": {
+    "overlay": "Drop a TXT, EPUB, or PDF to load its text"
+  },
+  "update": {
+    "available": "Update available — v{version}",
+    "ready": "A newer version of Out Loud is ready to download.",
+    "download": "Download",
+    "skip": "Skip this version"
+  },
+  "about": {
+    "title": "Out Loud",
+    "close": "Close",
+    "shortcutsHeading": "Keyboard shortcuts",
+    "shortcutEnter": "Speak the text, then clear it",
+    "shortcutShiftEnter": "New line (don't speak)",
+    "shortcutEsc": "Jump back to the text box",
+    "typeSpeakHeading": "Type & speak",
+    "typeSpeakBody": "Press Enter to speak the text and clear the box, and keep typing the next line while the last is still playing — the text box never locks and the cursor never leaves it. Use Shift+Enter for a new line, or the Play button to speak without clearing.",
+    "pausesHeading": "Pauses",
+    "pausesBody": "Insert a silence anywhere with a tag — all of these are equivalent:",
+    "pausesPunctuation": "Punctuation also pauses automatically: period/semicolon ≈ 0.4s, colon ≈ 0.3s, comma ≈ 0.2s, a new line ≈ 0.4s.",
+    "website": "Website",
+    "github": "GitHub",
+    "reportIssue": "Report an issue"
+  }
+}

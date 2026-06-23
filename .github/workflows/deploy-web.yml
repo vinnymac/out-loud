@@ -1,0 +1,63 @@
+name: Deploy web (Cloudflare Pages)
+
+# Builds the in-browser Out Loud (web/) and deploys the static output to
+# Cloudflare Pages. The app is fully static (~2.4 MB shell; the 86 MB model
+# streams from HuggingFace at runtime), needs no server, and needs no COOP/COEP
+# headers (single-threaded WASM) — so Pages serves it as-is over HTTPS.
+#
+# Production deploys on push to main (i.e. on merge). You can also run it manually
+# (workflow_dispatch) on any branch — non-main refs deploy to a Pages PREVIEW URL,
+# so dispatching on vt/web-loud is a safe smoke test before the app reaches main.
+#
+# ── One-time Cloudflare setup (your account; not done in code) ────────────────
+#   1. Workers & Pages → Create → Pages → create a project named `out-loud`
+#      (Direct Upload). Set its *production branch* to `main`.
+#   2. My Profile → API Tokens → create a token with "Cloudflare Pages: Edit".
+#      Note your Account ID (Workers & Pages overview, right sidebar).
+#   3. Repo → Settings → Secrets and variables → Actions → add:
+#        CLOUDFLARE_API_TOKEN   = <the token>
+#        CLOUDFLARE_ACCOUNT_ID  = <your account id>
+#   4. Pages project → Custom domains → add `loud.vinnymac.dev`. If vinnymac.dev
+#      is on Cloudflare DNS this creates the CNAME automatically; otherwise add a
+#      CNAME from loud → out-loud.pages.dev at your DNS provider.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-web-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build + deploy to Cloudflare Pages
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Setup Node + Rust (mise)
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web (static, in-browser TTS)
+        run: pnpm --filter out-loud-web build
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0 # v4.0.0
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # `main` -> production (loud.vinnymac.dev); other refs -> a preview URL.
+          command: pages deploy web/dist --project-name=out-loud --branch=${{ github.ref_name }}

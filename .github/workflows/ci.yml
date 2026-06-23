@@ -5,43 +5,76 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+# A new push to the same ref cancels the previous run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  check:
-    name: Lint, test, typecheck, build
+  quality:
+    name: Lint · format · dead-code · typecheck · build
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+
+      - name: Setup Node + Rust (mise)
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint (oxlint)
+        run: pnpm lint
+
+      - name: Format check (oxfmt)
+        run: pnpm format:check
+
+      - name: Dead-code check (knip)
+        run: pnpm knip
+
+      - name: Typecheck + build — desktop frontend
+        run: pnpm --filter out-loud-tauri build
+
+      - name: Typecheck + build — web
+        run: pnpm --filter out-loud-web build
+
+  engine:
+    name: Engine unit tests
+    runs-on: macos-14 # fast Apple Silicon runner (no scarce macos-13 dependency)
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Setup Node + Rust (mise)
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          node-version: "22"
-          cache: "npm"
+          workspaces: "tauri/src-tauri/engine -> target"
 
-      - name: Install root dependencies
-        run: npm ci
+      - name: cmake
+        run: brew install cmake || true
 
-      - name: Install electron-ui dependencies
-        run: npm --prefix electron-ui ci
+      # espeak-rs-sys's CMake `data` target races under parallel make (a half-copied
+      # phsource file -> "Failed to open" -> phondata Error 1; see release.yml for the
+      # full diagnosis). Build just that crate at -j1 first (cmake-rs derives
+      # --parallel from NUM_JOBS, so -j1 == serial == race-free); `cargo test` below
+      # then reuses the cached artifact and compiles the rest in parallel.
+      - name: Pre-build espeak-rs-sys serially (avoid espeak-ng data-target race)
+        working-directory: tauri/src-tauri/engine
+        run: CARGO_BUILD_JOBS=1 cargo build -p espeak-rs-sys
 
-      - name: Lint
-        run: npm run lint
-
-      - name: Format check
-        run: npm run format:check
-
-      - name: Knip (unused code/deps)
-        run: npm run knip
-
-      - name: Unit tests
-        run: npm test
-
-      - name: Typecheck Electron main
-        run: npm run electron:compile
-
-      - name: Build renderer UI
-        run: npm --prefix electron-ui run build
+      # Pure-logic unit tests (tokenize/text/voices/audio). The ONNX integration
+      # test self-skips without ORT_DYLIB_PATH, so no model/dylib is needed here.
+      - name: cargo test
+        working-directory: tauri/src-tauri/engine
+        run: cargo test

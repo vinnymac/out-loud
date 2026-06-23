@@ -1,0 +1,28 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "semi": true,
+  "singleQuote": false,
+  "trailingComma": "es5",
+  "printWidth": 100,
+  "tabWidth": 2,
+  "sortPackageJson": false,
+  "ignorePatterns": [
+    "node_modules/",
+    "dist/",
+    "releases/",
+    "tauri/dist/",
+    "tauri/src-tauri/target/",
+    "tauri/src-tauri/engine/target/",
+    "tauri/src-tauri/gen/",
+    "tauri/src-tauri/resources/",
+    "chrome-extension/dist/",
+    "models/",
+    "espeak-ng-data/",
+    "chrome-extension/lib/",
+    "tauri/src/reader/vendor/",
+    "package-lock.json",
+    "*.log",
+    "*.wasm",
+    "*.toml"
+  ]
+}
