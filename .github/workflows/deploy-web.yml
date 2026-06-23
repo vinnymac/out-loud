@@ -10,14 +10,14 @@ name: Deploy web (Cloudflare Pages)
 # so dispatching on vt/web-loud is a safe smoke test before the app reaches main.
 #
 # ── One-time Cloudflare setup (your account; not done in code) ────────────────
-#   1. Workers & Pages → Create → Pages → create a project named `out-loud`
-#      (Direct Upload). Set its *production branch* to `main`.
-#   2. My Profile → API Tokens → create a token with "Cloudflare Pages: Edit".
+#   The Pages project is created automatically by the workflow on first run.
+#   You still need to do these steps manually:
+#   1. My Profile → API Tokens → create a token with "Cloudflare Pages: Edit".
 #      Note your Account ID (Workers & Pages overview, right sidebar).
-#   3. Repo → Settings → Secrets and variables → Actions → add:
+#   2. Repo → Settings → Secrets and variables → Actions → add:
 #        CLOUDFLARE_API_TOKEN   = <the token>
 #        CLOUDFLARE_ACCOUNT_ID  = <your account id>
-#   4. Pages project → Custom domains → add `loud.vinnymac.dev`. If vinnymac.dev
+#   3. Pages project → Custom domains → add `loud.vinnymac.dev`. If vinnymac.dev
 #      is on Cloudflare DNS this creates the CNAME automatically; otherwise add a
 #      CNAME from loud → out-loud.pages.dev at your DNS provider.
 
@@ -53,6 +53,12 @@ jobs:
 
       - name: Build web (static, in-browser TTS)
         run: pnpm --filter out-loud-web build
+
+      - name: Create Cloudflare Pages project (no-op if already exists)
+        run: pnpm dlx wrangler@4 pages project create out-loud --production-branch=main || true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
       - name: Deploy to Cloudflare Pages
         # wrangler-action@v4 runs `pnpm add wrangler@4` at the workspace root,
