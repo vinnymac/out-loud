@@ -132,10 +132,6 @@ export function ensureConnected() {
   connect();
 }
 
-export function isConnected() {
-  return connected;
-}
-
 /** Resolve true once connected, or false after `timeoutMs`. */
 export function waitConnected(timeoutMs: number): Promise<boolean> {
   if (connected) return Promise.resolve(true);

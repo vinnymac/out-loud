@@ -1,0 +1,4 @@
+packages:
+  - tauri
+  - web
+  - chrome-extension

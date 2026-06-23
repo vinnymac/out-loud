@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useI18n } from "vue-i18n";
+import type { DownloadFormat } from "~/composables/useTts";
 
 const props = withDefaults(
   defineProps<{
@@ -10,10 +11,12 @@ const props = withDefaults(
     isExporting?: boolean;
     /** Export generation progress (0–100), shown on the button while exporting. */
     exportProgress?: number;
+    format?: DownloadFormat;
   }>(),
   {
     isExporting: false,
     exportProgress: 0,
+    format: "mp3",
   }
 );
 
@@ -21,6 +24,7 @@ const emit = defineEmits<{
   playPause: [];
   download: [];
   cancelExport: [];
+  "update:format": [value: DownloadFormat];
 }>();
 
 const { t } = useI18n();
@@ -49,6 +53,17 @@ function onDownloadClick() {
     <button class="btn-primary flex-1 py-3 text-sm" @click="emit('playPause')">
       {{ buttonText }}
     </button>
+    <select
+      class="field cursor-pointer px-2 text-sm"
+      :value="format"
+      :disabled="isExporting"
+      :aria-label="t('controls.format')"
+      :title="t('controls.format')"
+      @change="emit('update:format', ($event.target as HTMLSelectElement).value as DownloadFormat)"
+    >
+      <option value="mp3">MP3</option>
+      <option value="wav">WAV</option>
+    </select>
     <button
       class="relative flex min-w-[52px] cursor-pointer items-center justify-center overflow-hidden rounded-md border-none bg-gray-700 px-4 py-3 text-sm font-medium text-white transition-all duration-200 hover:bg-gray-600 focus-ring active:bg-gray-800 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-gray-700"
       :disabled="!isExporting && !canDownload"

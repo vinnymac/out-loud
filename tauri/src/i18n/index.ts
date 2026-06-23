@@ -10,5 +10,3 @@ export const i18n = createI18n({
   fallbackLocale: "en",
   messages: { en },
 });
-
-export type MessageSchema = typeof en;

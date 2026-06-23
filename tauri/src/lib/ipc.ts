@@ -139,15 +139,6 @@ export function recentsRemove(key: string): Promise<RecentEntry[]> {
 
 // ---- Shared settings (synced with browser extensions via the sidecar) ----
 
-export async function getSettings(): Promise<SharedSettings | null> {
-  try {
-    const res = await fetch(`${API_BASE}/api/v1/settings`);
-    return (await res.json()) as SharedSettings;
-  } catch {
-    return null;
-  }
-}
-
 export function updateSettings(updates: Partial<SharedSettings>): void {
   // The X-Out-Loud-Client header tells the sidecar this change came from the
   // app, so it won't echo it straight back over the WS settings broadcast.

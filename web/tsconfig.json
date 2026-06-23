@@ -1,0 +1,44 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+    "useDefineForClassFields": true,
+    "module": "ESNext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable", "WebWorker"],
+    "skipLibCheck": true,
+
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "jsx": "preserve",
+
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+
+    "types": ["vite/client"],
+    // Type-check seam: the same redirects the Vite resolveId plugin applies at
+    // build time. `~/lib/ipc` and `~/lib/tts-client` resolve to the web
+    // replacements; everything else under `~` is the shared Tauri/Vue source.
+    "paths": {
+      "~/lib/ipc": ["./src/ipc.ts"],
+      "~/lib/tts-client": ["./src/tts-client.ts"],
+      "~/*": ["../tauri/src/*"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.d.ts",
+    "src/**/*.vue",
+    "../tauri/src/**/*.ts",
+    "../tauri/src/**/*.d.ts",
+    "../tauri/src/**/*.vue"
+  ],
+  // The web build has its own entry (src/main.ts); the Tauri entry pulls in the
+  // native-only WebSocket client, which we don't ship.
+  "exclude": ["../tauri/src/main.ts"]
+}

@@ -9,6 +9,9 @@ import {
   cancelGeneration,
   waitConnected,
 } from "~/lib/tts-client";
+import { Mp3Encoder } from "@breezystack/lamejs";
+
+export type DownloadFormat = "wav" | "mp3";
 
 // How many chunks ahead of the playhead the engine may generate during normal
 // playback (backpressure). Download/export lifts this cap to generate fully.
@@ -16,6 +19,15 @@ const AHEAD = 20;
 // If the engine produces nothing within this window, surface a clear error
 // instead of spinning forever (e.g. the sidecar failed to start).
 const FIRST_RESPONSE_TIMEOUT_MS = 20_000;
+// Underrun handling (matters on the web build, where in-browser synthesis can be
+// slower than real time; on desktop the engine generates faster than playback so
+// these never trigger). If the scheduled audio ahead of the playhead drops below
+// UNDERRUN_GUARD while more chunks are still coming, we suspend the AudioContext
+// — which freezes audio AND the clock together — instead of playing silence, then
+// resume once RESUME_LEAD seconds of audio are buffered again. This keeps pauses
+// exact and the timer honest rather than counting real seconds through the gaps.
+const UNDERRUN_GUARD = 0.12;
+const RESUME_LEAD = 0.5;
 
 function formatTime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
@@ -36,6 +48,7 @@ export function useTts(getVolume: () => number) {
   const player = reactive({
     isPlaying: false,
     isPaused: false,
+    isBuffering: false,
     chunkProgress: 0,
     playProgress: 0,
     stats: "-",
@@ -67,7 +80,23 @@ export function useTts(getVolume: () => number) {
   let currentReqId: string | null = null;
   let lastSentTarget = -1;
   let pendingExport = false;
+  let exportFormat: DownloadFormat = "wav";
   let firstResponseTimer: ReturnType<typeof setTimeout> | null = null;
+  // True while we've suspended the context to rebuffer after an underrun.
+  let buffering = false;
+
+  // Resume from a rebuffering suspend once we have enough audio queued ahead (or
+  // the stream finished). Driven by chunk arrivals, not the rAF loop, since the
+  // loop is parked while suspended.
+  function maybeResume() {
+    if (!buffering || !audioCtx || player.isPaused) return;
+    const ahead = scheduledEndTime - audioCtx.currentTime;
+    if (!allChunksReceived && ahead < RESUME_LEAD) return;
+    buffering = false;
+    player.isBuffering = false;
+    audioCtx.resume();
+    if (animationFrame === null) animationFrame = requestAnimationFrame(updatePlayback);
+  }
 
   function clearFirstResponseTimer() {
     if (firstResponseTimer) {
@@ -100,8 +129,10 @@ export function useTts(getVolume: () => number) {
       audioCtx = null;
     }
     gainNode = null;
+    buffering = false;
     player.isPlaying = false;
     player.isPaused = false;
+    player.isBuffering = false;
     player.isExporting = false;
     player.canDownload = false;
     player.currentChunkIndex = -1;
@@ -147,6 +178,33 @@ export function useTts(getVolume: () => number) {
       }
     }
 
+    // Underrun guard: if generation can't keep up and we're about to run past the
+    // last scheduled audio, suspend the context instead of playing through silence.
+    // Suspending freezes audioCtx.currentTime, so `elapsed` (and the highlight)
+    // stop with the audio — the timer never overruns the real audio. We resume in
+    // maybeResume() once enough audio is buffered again. Don't reschedule the rAF
+    // loop here; chunk arrivals drive the resume.
+    if (
+      !allChunksReceived &&
+      !player.isPaused &&
+      currentReqId &&
+      scheduledEndTime - now <= UNDERRUN_GUARD
+    ) {
+      buffering = true;
+      player.isBuffering = true;
+      audioCtx.suspend();
+      // Keep the engine working while we wait, regardless of where the (frozen)
+      // playhead sits, so backpressure can't park it and deadlock the rebuffer.
+      const target = chunksReceived + AHEAD;
+      if (target > lastSentTarget) {
+        lastSentTarget = target;
+        setBufferTarget(currentReqId, target);
+      }
+      player.stats = t("status.buffering");
+      animationFrame = null;
+      return;
+    }
+
     let displayDuration: number;
     if (allChunksReceived) {
       displayDuration = scheduledEndTime - playbackStartTime;
@@ -160,6 +218,10 @@ export function useTts(getVolume: () => number) {
     } else {
       displayDuration = textBasedEstimate;
     }
+
+    // The streamed total is an estimate until allChunksReceived; never let it read
+    // below the time already elapsed, so the timer can't show e.g. 9.9 / ~9.
+    if (!allChunksReceived) displayDuration = Math.max(displayDuration, elapsed);
 
     if (displayDuration > 0) {
       const pct = Math.min(100, (elapsed / displayDuration) * 100);
@@ -222,6 +284,10 @@ export function useTts(getVolume: () => number) {
           stopAudio();
           // fall through to start fresh
         } else {
+          // User resume takes precedence over any rebuffering suspend; if the
+          // buffer is still thin the underrun guard will re-engage on its own.
+          buffering = false;
+          player.isBuffering = false;
           audioCtx.resume();
           player.isPaused = false;
           animationFrame = requestAnimationFrame(
@@ -262,9 +328,11 @@ export function useTts(getVolume: () => number) {
     chunksReceived = 0;
     totalChunksCount = 0;
     chunkTimings = [];
+    buffering = false;
 
     player.isPlaying = true;
     player.isPaused = false;
+    player.isBuffering = false;
     player.chunkProgress = 0;
     player.playProgress = 0;
     player.stats = "-";
@@ -395,6 +463,17 @@ export function useTts(getVolume: () => number) {
                 ? Math.round(((chunkIndex + 1) / totalChunks) * 100)
                 : Math.min(95, (chunksReceived / (chunksReceived + 2)) * 100);
             player.canDownload = true;
+
+            // While rebuffering after an underrun: keep the engine generating
+            // (so it can't park on backpressure) and resume once we have a lead.
+            if (buffering) {
+              const target = chunksReceived + AHEAD;
+              if (currentReqId && target > lastSentTarget) {
+                lastSentTarget = target;
+                setBufferTarget(currentReqId, target);
+              }
+              maybeResume();
+            }
           },
           onComplete: () => {
             allChunksReceived = true;
@@ -406,10 +485,13 @@ export function useTts(getVolume: () => number) {
               return;
             }
             player.canDownload = true;
+            // If we were rebuffering, the stream ending means "play out what's
+            // left" — resume immediately rather than waiting for a lead.
+            maybeResume();
             if (pendingExport) {
               pendingExport = false;
               player.isExporting = false;
-              exportWav();
+              exportAudio();
             }
           },
           onError: (error) => {
@@ -427,8 +509,8 @@ export function useTts(getVolume: () => number) {
     }
   }
 
-  // Build a WAV from all generated chunks and trigger a browser download.
-  function exportWav() {
+  // Build an audio file (WAV or MP3) from all generated chunks and download it.
+  function exportAudio() {
     if (cachedAudioBuffers.length === 0) return;
 
     const buffers = cachedAudioBuffers;
@@ -446,14 +528,20 @@ export function useTts(getVolume: () => number) {
       offset += buffer.length;
     }
 
+    const format = exportFormat;
     offlineCtx.startRendering().then((renderedBuffer) => {
-      const wavData = audioBufferToWav(renderedBuffer);
-      const blob = new Blob([wavData], { type: "audio/wav" });
+      const { blob, ext } =
+        format === "mp3"
+          ? { blob: new Blob([encodeMp3(renderedBuffer)], { type: "audio/mpeg" }), ext: "mp3" }
+          : {
+              blob: new Blob([audioBufferToWav(renderedBuffer)], { type: "audio/wav" }),
+              ext: "wav",
+            };
       const url = URL.createObjectURL(blob);
 
       const now = new Date();
       const timestamp = now.toISOString().replace(/[:.T]/g, "-").slice(0, 19);
-      const filename = `out-loud-${timestamp}.wav`;
+      const filename = `out-loud-${timestamp}.${ext}`;
 
       const a = document.createElement("a");
       a.href = url;
@@ -463,13 +551,14 @@ export function useTts(getVolume: () => number) {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      track("audio_downloaded", { duration_seconds: renderedBuffer.duration });
+      track("audio_downloaded", { duration_seconds: renderedBuffer.duration, format });
     });
   }
 
-  function download() {
+  function download(format: DownloadFormat = "wav") {
+    exportFormat = format;
     if (allChunksReceived) {
-      exportWav();
+      exportAudio();
       return;
     }
     if (!currentReqId) return;
@@ -498,6 +587,51 @@ export function useTts(getVolume: () => number) {
   });
 
   return Object.assign(player, { play, stop, setVolume, download, cancelExport });
+}
+
+// Encode an AudioBuffer to MP3 via lamejs — the client-side equivalent of the
+// engine's mp3lame `response_format: mp3`. 24 kHz mono speech compresses ~10×
+// vs WAV. Returns the full MP3 bytes (one ArrayBuffer-backed Uint8Array).
+function encodeMp3(buffer: AudioBuffer): Uint8Array<ArrayBuffer> {
+  const channels = Math.min(buffer.numberOfChannels, 2);
+  const encoder = new Mp3Encoder(channels, buffer.sampleRate, 128);
+  const left = floatTo16BitPCM(buffer.getChannelData(0));
+  const right = channels > 1 ? floatTo16BitPCM(buffer.getChannelData(1)) : undefined;
+
+  const blockSize = 1152; // one MPEG frame's worth of samples
+  const frames: Uint8Array[] = [];
+  let total = 0;
+  for (let i = 0; i < left.length; i += blockSize) {
+    const l = left.subarray(i, i + blockSize);
+    const r = right ? right.subarray(i, i + blockSize) : undefined;
+    const encoded = encoder.encodeBuffer(l, r);
+    if (encoded.length > 0) {
+      frames.push(encoded);
+      total += encoded.length;
+    }
+  }
+  const end = encoder.flush();
+  if (end.length > 0) {
+    frames.push(end);
+    total += end.length;
+  }
+
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const frame of frames) {
+    out.set(frame, offset);
+    offset += frame.length;
+  }
+  return out;
+}
+
+function floatTo16BitPCM(input: Float32Array): Int16Array {
+  const out = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i++) {
+    const s = Math.max(-1, Math.min(1, input[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+  }
+  return out;
 }
 
 // Convert an AudioBuffer to a 16-bit PCM WAV (matches the original export).
