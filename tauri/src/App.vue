@@ -166,7 +166,7 @@ const srStatus = computed(() => {
 </script>
 
 <template>
-  <div class="flex h-screen select-none flex-col overflow-hidden">
+  <div class="flex h-full select-none flex-col overflow-hidden">
     <!-- Full-width top: drag strip + header -->
     <div class="px-5">
       <div class="h-8 w-full" :data-tauri-drag-region="isMac ? '' : undefined" />

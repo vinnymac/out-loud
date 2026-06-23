@@ -14,6 +14,13 @@ import {
 
 type GateState = "checking" | "needs-download" | "downloading" | "ready" | "error";
 
+// Public project links (web-only chrome). The canonical public repo is
+// light-cloud-com/out-loud — where the desktop installers and the packaged
+// browser extension (out-loud-chrome.zip) are published as release assets.
+const REPO_URL = "https://github.com/light-cloud-com/out-loud";
+const RELEASES_URL = `${REPO_URL}/releases/latest`;
+const EXTENSION_URL = `${REPO_URL}/tree/main/chrome-extension`;
+
 const { t } = useI18n();
 
 const state = ref<GateState>("checking");
@@ -231,4 +238,42 @@ async function clearStorage() {
       </template>
     </div>
   </div>
+
+  <!-- Project links (web-only): source on GitHub, plus a nudge that native
+       desktop apps and a browser extension exist. Sits above the gate overlay
+       (z-[60] > z-50) so it's present on the download screen too. -->
+  <footer
+    class="fixed bottom-2 end-2 z-[60] flex flex-col items-end gap-0.5 text-end text-2xs text-fg-subtle"
+  >
+    <a
+      :href="REPO_URL"
+      target="_blank"
+      rel="noopener noreferrer"
+      class="focus-ring flex items-center gap-1 rounded text-fg-muted opacity-70 transition-opacity hover:(text-fg opacity-100)"
+      :title="t('web.links.githubHint')"
+    >
+      <span class="i-lucide-github" aria-hidden="true" />
+      <span>{{ t("web.links.github") }}</span>
+    </a>
+    <p class="opacity-70">
+      {{ t("web.links.also") }}
+      <a
+        :href="RELEASES_URL"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="focus-ring rounded underline decoration-dotted underline-offset-2 hover:text-fg"
+        :title="t('web.links.desktopHint')"
+        >{{ t("web.links.desktop") }}</a
+      >
+      ·
+      <a
+        :href="EXTENSION_URL"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="focus-ring rounded underline decoration-dotted underline-offset-2 hover:text-fg"
+        :title="t('web.links.extensionHint')"
+        >{{ t("web.links.extension") }}</a
+      >
+    </p>
+  </footer>
 </template>

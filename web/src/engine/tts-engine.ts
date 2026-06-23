@@ -12,7 +12,10 @@
 // runs via onnxruntime-web; espeak-ng WASM does phonemization. Assets stream from
 // HuggingFace + jsDelivr and are cached in CacheStorage after first load.
 
-import * as ort from "onnxruntime-web";
+// The /webgpu entry is a superset of the default bundle: it registers the WebGPU
+// execution provider AND keeps the WASM one for fallback (see createSession). The
+// plain "onnxruntime-web" entry ships WASM only, so WebGPU would never engage.
+import * as ort from "onnxruntime-web/webgpu";
 import { CACHE_NAME, DEFAULT_MODEL, DEFAULT_VOICE, MODELS, modelUrl, voiceUrl } from "./assets";
 
 // ---- Constants ----
@@ -302,12 +305,39 @@ async function loadModel(
 
   onProgress?.({ stage: "init", progress: 50, message: "Initializing ONNX runtime…" });
   ort.env.wasm.wasmPaths = `https://cdn.jsdelivr.net/npm/onnxruntime-web@${ORT_VERSION}/dist/`;
-  const session = await ort.InferenceSession.create(buffer, { executionProviders: ["wasm"] });
+  // Use multiple WASM threads only when the page is cross-origin isolated (the
+  // COI service worker arranges that); otherwise SharedArrayBuffer is absent and
+  // ORT would fall back to one thread anyway. Capped to keep memory reasonable.
+  if (typeof self !== "undefined" && self.crossOriginIsolated) {
+    ort.env.wasm.numThreads = Math.min(navigator.hardwareConcurrency || 4, 4);
+  }
+  const session = await createSession(buffer);
 
   cache.session = session;
   cache.modelId = modelId;
   onProgress?.({ stage: "model", progress: 100, message: "Model loaded" });
   return session;
+}
+
+/**
+ * Create the inference session, preferring the WebGPU execution provider (a large
+ * speedup for Kokoro) and falling back to WASM. WebGPU needs no cross-origin
+ * isolation, so it's the safe speed win; support is uneven across Safari/Firefox,
+ * hence the graceful fallback. `["webgpu", "wasm"]` also lets ORT run any op
+ * WebGPU doesn't implement on the WASM backend within the same session.
+ */
+async function createSession(buffer: ArrayBuffer): Promise<ort.InferenceSession> {
+  const hasWebGpu = typeof navigator !== "undefined" && "gpu" in navigator;
+  if (hasWebGpu) {
+    try {
+      return await ort.InferenceSession.create(buffer, {
+        executionProviders: ["webgpu", "wasm"],
+      });
+    } catch (err) {
+      console.warn("[out-loud] WebGPU unavailable, falling back to WASM:", err);
+    }
+  }
+  return ort.InferenceSession.create(buffer, { executionProviders: ["wasm"] });
 }
 
 async function loadVoice(voiceId: string, onProgress?: ProgressCallback): Promise<number[][][]> {
@@ -372,9 +402,37 @@ async function phonemize(text: string, langId: string): Promise<string> {
 }
 
 // ---- Text → chunks ----
+//
+// This MUST stay byte-for-byte equivalent to the native engine's `sanitize_text`
+// (tauri/src-tauri/engine/src/text.rs) AND the UI's `splitIntoChunks`
+// (tauri/src/components/TextInput.vue), because the on-screen highlight maps the
+// streamed chunk index back onto the text by replicating this exact splitting.
+// The previous web version was missing pause-tag / ellipsis / dash handling, so
+// any text containing them desynced the highlight from the audio.
+
+// User-facing pause syntaxes → the canonical `[Ns]` marker (mirrors
+// normalize_pause_tags). Order matters: <pause=…>, then <break time=…>, then [N(ms|s)].
+const RE_PAUSE_TAG = /<\s*pause\s*=\s*"?([0-9]*\.?[0-9]+)\s*(ms|s)?"?\s*\/?\s*>/gi;
+const RE_BREAK_TAG = /<\s*break\s+time\s*=\s*["']?([0-9]*\.?[0-9]+)\s*(ms|s)?["']?\s*\/?\s*>/gi;
+const RE_BRACKET_TAG = /\[\s*([0-9]*\.?[0-9]+)\s*(ms|s)\s*\]/gi;
+
+function toMarker(value: string, unit: string | undefined): string {
+  const n = parseFloat(value);
+  const seconds =
+    unit?.toLowerCase() === "ms" ? (Number.isNaN(n) ? 0 : n) / 1000 : Number.isNaN(n) ? 0 : n;
+  return `[${seconds}s]`;
+}
+
+function normalizePauseTags(text: string): string {
+  const repl = (_m: string, value: string, unit?: string) => toMarker(value, unit);
+  return text.replace(RE_PAUSE_TAG, repl).replace(RE_BREAK_TAG, repl).replace(RE_BRACKET_TAG, repl);
+}
 
 function sanitizeText(rawText: string): string {
-  return rawText
+  return normalizePauseTags(rawText)
+    .replace(/\s*(?:…|\.{3,})\s*/g, "[0.5s]")
+    .replace(/\s*—\s*/g, "[0.3s]")
+    .replace(/\s+[–-]\s+/g, "[0.3s]")
     .replace(/\.\s+/g, "[0.4s]")
     .replace(/,\s+/g, "[0.2s]")
     .replace(/;\s+/g, "[0.4s]")
@@ -422,19 +480,26 @@ function tokenize(phonemes: string): number[] {
   return [...phonemes].map((char) => VOCAB[char] ?? fallback);
 }
 
-type Unit = { type: "silence"; durationSeconds: number } | { type: "text"; tokens: number[] };
+// One unit == one streamed chunk == one piece in the UI's `splitIntoChunks`. A
+// text segment may need several inference passes (phoneme sub-chunks past the
+// context window), but they're concatenated back into a single chunk so the
+// index stays aligned.
+type Unit = { type: "silence"; samples: number } | { type: "text"; subTokens: number[][] };
 
 async function preprocessText(text: string, langId: string): Promise<Unit[]> {
   const units: Unit[] = [];
   for (const segment of segmentText(sanitizeText(text))) {
     if (isSilenceMarker(segment)) {
-      units.push({ type: "silence", durationSeconds: extractSilenceDuration(segment) });
+      const samples = Math.floor(extractSilenceDuration(segment) * SAMPLE_RATE);
+      // Always emit (>=1 sample) so a marker keeps its chunk slot even if 0s.
+      units.push({ type: "silence", samples: Math.max(1, samples) });
       continue;
     }
     const phonemized = await phonemize(segment, langId);
-    for (const sub of createPhonemeSubChunks(phonemized, TOKENS_PER_CHUNK)) {
-      units.push({ type: "text", tokens: tokenize(sub) });
-    }
+    const subTokens = createPhonemeSubChunks(phonemized, TOKENS_PER_CHUNK)
+      .map(tokenize)
+      .filter((t) => t.length >= 1);
+    units.push({ type: "text", subTokens });
   }
   return units;
 }
@@ -585,6 +650,19 @@ function trimWaveform(waveform: Float32Array): Float32Array {
   return waveform.slice(startSample, endSample);
 }
 
+/** Concatenate phoneme sub-chunk waveforms into a single segment waveform. */
+function concatFloat32(parts: Float32Array[]): Float32Array {
+  if (parts.length === 1) return parts[0];
+  const total = parts.reduce((sum, p) => sum + p.length, 0);
+  const out = new Float32Array(total);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
 function writeString(view: DataView, offset: number, str: string): void {
   for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
 }
@@ -661,17 +739,25 @@ export async function* synthesize(
 
   for (const unit of units) {
     if (unit.type === "silence") {
-      const samples = Math.floor(unit.durationSeconds * SAMPLE_RATE);
-      // Skip zero-length silence (an empty AudioBuffer is invalid downstream).
-      if (samples <= 0) continue;
-      yield { wav: createWavBuffer(new Float32Array(samples), SAMPLE_RATE), totalChunks };
+      yield { wav: createWavBuffer(new Float32Array(unit.samples), SAMPLE_RATE), totalChunks };
       continue;
     }
 
-    if (unit.tokens.length < 1) continue;
-    const refS = combined[unit.tokens.length - 1][0];
-    const waveform = trimWaveform(await runInference(session, unit.tokens, refS, speed));
-    if (waveform.length === 0) continue;
-    yield { wav: createWavBuffer(waveform, SAMPLE_RATE), totalChunks };
+    // Synthesize each phoneme sub-chunk and concatenate into ONE chunk for the
+    // segment. Emitting exactly one chunk per unit (never skipping) keeps the
+    // streamed chunk index aligned with the UI's highlight splitting and means a
+    // sentence is never silently dropped — even one that trims to no audio still
+    // emits a minimal buffer to hold its slot.
+    const parts: Float32Array[] = [];
+    for (const tokens of unit.subTokens) {
+      const refS = combined[tokens.length - 1][0];
+      const waveform = trimWaveform(await runInference(session, tokens, refS, speed));
+      if (waveform.length > 0) parts.push(waveform);
+    }
+    const merged = concatFloat32(parts);
+    yield {
+      wav: createWavBuffer(merged.length > 0 ? merged : new Float32Array(1), SAMPLE_RATE),
+      totalChunks,
+    };
   }
 }

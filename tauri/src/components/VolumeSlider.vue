@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { onBeforeUnmount, onMounted, ref } from "vue";
 import { useI18n } from "vue-i18n";
 
 const props = defineProps<{
@@ -36,6 +36,29 @@ function onMouseDown(e: MouseEvent) {
   document.addEventListener("mousemove", onMove);
   document.addEventListener("mouseup", onUp);
 }
+
+function onTouchStart(e: TouchEvent) {
+  e.preventDefault();
+  updateValue(e.touches[0].clientY);
+  const onMove = (ev: TouchEvent) => {
+    ev.preventDefault();
+    updateValue(ev.touches[0].clientY);
+  };
+  const onEnd = () => {
+    document.removeEventListener("touchmove", onMove);
+    document.removeEventListener("touchend", onEnd);
+  };
+  document.addEventListener("touchmove", onMove, { passive: false });
+  document.addEventListener("touchend", onEnd);
+}
+
+onMounted(() => {
+  trackEl.value?.addEventListener("touchstart", onTouchStart, { passive: false });
+});
+
+onBeforeUnmount(() => {
+  trackEl.value?.removeEventListener("touchstart", onTouchStart);
+});
 </script>
 
 <template>

@@ -19,6 +19,15 @@ const AHEAD = 20;
 // If the engine produces nothing within this window, surface a clear error
 // instead of spinning forever (e.g. the sidecar failed to start).
 const FIRST_RESPONSE_TIMEOUT_MS = 20_000;
+// Underrun handling (matters on the web build, where in-browser synthesis can be
+// slower than real time; on desktop the engine generates faster than playback so
+// these never trigger). If the scheduled audio ahead of the playhead drops below
+// UNDERRUN_GUARD while more chunks are still coming, we suspend the AudioContext
+// — which freezes audio AND the clock together — instead of playing silence, then
+// resume once RESUME_LEAD seconds of audio are buffered again. This keeps pauses
+// exact and the timer honest rather than counting real seconds through the gaps.
+const UNDERRUN_GUARD = 0.12;
+const RESUME_LEAD = 0.5;
 
 function formatTime(seconds: number): string {
   const h = Math.floor(seconds / 3600);
@@ -39,6 +48,7 @@ export function useTts(getVolume: () => number) {
   const player = reactive({
     isPlaying: false,
     isPaused: false,
+    isBuffering: false,
     chunkProgress: 0,
     playProgress: 0,
     stats: "-",
@@ -72,6 +82,21 @@ export function useTts(getVolume: () => number) {
   let pendingExport = false;
   let exportFormat: DownloadFormat = "wav";
   let firstResponseTimer: ReturnType<typeof setTimeout> | null = null;
+  // True while we've suspended the context to rebuffer after an underrun.
+  let buffering = false;
+
+  // Resume from a rebuffering suspend once we have enough audio queued ahead (or
+  // the stream finished). Driven by chunk arrivals, not the rAF loop, since the
+  // loop is parked while suspended.
+  function maybeResume() {
+    if (!buffering || !audioCtx || player.isPaused) return;
+    const ahead = scheduledEndTime - audioCtx.currentTime;
+    if (!allChunksReceived && ahead < RESUME_LEAD) return;
+    buffering = false;
+    player.isBuffering = false;
+    audioCtx.resume();
+    if (animationFrame === null) animationFrame = requestAnimationFrame(updatePlayback);
+  }
 
   function clearFirstResponseTimer() {
     if (firstResponseTimer) {
@@ -104,8 +129,10 @@ export function useTts(getVolume: () => number) {
       audioCtx = null;
     }
     gainNode = null;
+    buffering = false;
     player.isPlaying = false;
     player.isPaused = false;
+    player.isBuffering = false;
     player.isExporting = false;
     player.canDownload = false;
     player.currentChunkIndex = -1;
@@ -151,6 +178,33 @@ export function useTts(getVolume: () => number) {
       }
     }
 
+    // Underrun guard: if generation can't keep up and we're about to run past the
+    // last scheduled audio, suspend the context instead of playing through silence.
+    // Suspending freezes audioCtx.currentTime, so `elapsed` (and the highlight)
+    // stop with the audio — the timer never overruns the real audio. We resume in
+    // maybeResume() once enough audio is buffered again. Don't reschedule the rAF
+    // loop here; chunk arrivals drive the resume.
+    if (
+      !allChunksReceived &&
+      !player.isPaused &&
+      currentReqId &&
+      scheduledEndTime - now <= UNDERRUN_GUARD
+    ) {
+      buffering = true;
+      player.isBuffering = true;
+      audioCtx.suspend();
+      // Keep the engine working while we wait, regardless of where the (frozen)
+      // playhead sits, so backpressure can't park it and deadlock the rebuffer.
+      const target = chunksReceived + AHEAD;
+      if (target > lastSentTarget) {
+        lastSentTarget = target;
+        setBufferTarget(currentReqId, target);
+      }
+      player.stats = t("status.buffering");
+      animationFrame = null;
+      return;
+    }
+
     let displayDuration: number;
     if (allChunksReceived) {
       displayDuration = scheduledEndTime - playbackStartTime;
@@ -164,6 +218,10 @@ export function useTts(getVolume: () => number) {
     } else {
       displayDuration = textBasedEstimate;
     }
+
+    // The streamed total is an estimate until allChunksReceived; never let it read
+    // below the time already elapsed, so the timer can't show e.g. 9.9 / ~9.
+    if (!allChunksReceived) displayDuration = Math.max(displayDuration, elapsed);
 
     if (displayDuration > 0) {
       const pct = Math.min(100, (elapsed / displayDuration) * 100);
@@ -226,6 +284,10 @@ export function useTts(getVolume: () => number) {
           stopAudio();
           // fall through to start fresh
         } else {
+          // User resume takes precedence over any rebuffering suspend; if the
+          // buffer is still thin the underrun guard will re-engage on its own.
+          buffering = false;
+          player.isBuffering = false;
           audioCtx.resume();
           player.isPaused = false;
           animationFrame = requestAnimationFrame(
@@ -266,9 +328,11 @@ export function useTts(getVolume: () => number) {
     chunksReceived = 0;
     totalChunksCount = 0;
     chunkTimings = [];
+    buffering = false;
 
     player.isPlaying = true;
     player.isPaused = false;
+    player.isBuffering = false;
     player.chunkProgress = 0;
     player.playProgress = 0;
     player.stats = "-";
@@ -399,6 +463,17 @@ export function useTts(getVolume: () => number) {
                 ? Math.round(((chunkIndex + 1) / totalChunks) * 100)
                 : Math.min(95, (chunksReceived / (chunksReceived + 2)) * 100);
             player.canDownload = true;
+
+            // While rebuffering after an underrun: keep the engine generating
+            // (so it can't park on backpressure) and resume once we have a lead.
+            if (buffering) {
+              const target = chunksReceived + AHEAD;
+              if (currentReqId && target > lastSentTarget) {
+                lastSentTarget = target;
+                setBufferTarget(currentReqId, target);
+              }
+              maybeResume();
+            }
           },
           onComplete: () => {
             allChunksReceived = true;
@@ -410,6 +485,9 @@ export function useTts(getVolume: () => number) {
               return;
             }
             player.canDownload = true;
+            // If we were rebuffering, the stream ending means "play out what's
+            // left" — resume immediately rather than waiting for a lead.
+            maybeResume();
             if (pendingExport) {
               pendingExport = false;
               player.isExporting = false;

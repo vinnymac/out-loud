@@ -22,6 +22,15 @@ export const webMessages = {
         errorHelp:
           "Check your connection and try again. The model is fetched from HuggingFace; a network or browser-storage issue can interrupt it.",
       },
+      links: {
+        github: "GitHub",
+        githubHint: "View Out Loud's source on GitHub",
+        also: "Also available as a",
+        desktop: "desktop app",
+        desktopHint: "Download the desktop app for macOS, Windows & Linux",
+        extension: "browser extension",
+        extensionHint: "Get the Chrome / Safari browser extension",
+      },
       storage: {
         button: "Storage",
         title: "Downloaded data",

@@ -34,6 +34,15 @@ body,
   height: 100%;
 }
 
+/* On mobile browsers the dynamic toolbar makes 100vh taller than the visible
+   area; dvh tracks the actual usable height. Tauri windows are fixed-size so
+   dvh and vh are equivalent there. */
+@supports (height: 100dvh) {
+  html {
+    height: 100dvh;
+  }
+}
+
 body {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: var(--bg);

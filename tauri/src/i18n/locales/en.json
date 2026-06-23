@@ -58,6 +58,7 @@
     "done": "Done ({time})",
     "generatingSpeech": "Generating speech",
     "speaking": "Speaking",
+    "buffering": "Buffering...",
     "errorGenerating": "Error generating speech"
   },
   "errors": {
